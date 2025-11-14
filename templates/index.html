@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio MIDI Annotator</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="page page--index">
+    <header class="site-header">
+        <div>
+            <p class="eyebrow">Audio · MIDI · Minimal</p>
+            <h1>Annotation Workspace</h1>
+            <p class="lede">Choose a piece to explore synchronized audio and MIDI annotations.</p>
+        </div>
+        <a class="ghost-button" href="https://github.com" target="_blank" rel="noopener">Docs</a>
+    </header>
+
+    <main class="content">
+        {% if songs %}
+        <section class="song-grid">
+            {% for song in songs %}
+            <a class="song-card" href="{{ url_for('annotate', song_name=song.name) }}">
+                <div class="song-card__tag">Ready</div>
+                <h2>{{ song.title }}</h2>
+                <p>{{ song.name }}</p>
+                <span class="pill">Annotate</span>
+            </a>
+            {% endfor %}
+        </section>
+        {% else %}
+        <section class="empty-state">
+            <h2>No songs yet</h2>
+            <p>Drop MIDI and audio pairs into <code>/data/&lt;song-name&gt;</code> to begin.</p>
+        </section>
+        {% endif %}
+    </main>
+</body>
+</html>
+
