@@ -226,8 +226,9 @@ class AnnotationApp {
             button.style.width = `${width}%`;
             button.style.top = `calc(${top}% - 14px)`;
             button.style.height = "28px";
-            button.textContent = note.pitch;
-            button.title = `Pitch ${note.pitch} (${note.start.toFixed(2)}s → ${note.end.toFixed(2)}s)`;
+            const pitchLabel = this.getPitchLabel(note.pitch);
+            button.textContent = pitchLabel;
+            button.title = `Pitch ${pitchLabel} (${note.start.toFixed(2)}s → ${note.end.toFixed(2)}s)`;
 
             button.addEventListener("mouseenter", () => this.updateNoteReadout(note));
             button.addEventListener("focus", () => this.updateNoteReadout(note));
@@ -253,7 +254,7 @@ class AnnotationApp {
         this.notes.forEach((note, index) => {
             const button = document.createElement("button");
             button.className = "note-pill";
-            button.textContent = `#${index + 1} · ${note.pitch}`;
+            button.textContent = `#${index + 1} · ${this.getPitchLabel(note.pitch)}`;
             button.addEventListener("click", () => this.playSlice(note.start, note.end));
             fragment.appendChild(button);
         });
@@ -328,7 +329,13 @@ class AnnotationApp {
 
     updateNoteReadout(note) {
         if (!this.dom.noteReadout) return;
-        this.dom.noteReadout.textContent = `Pitch ${note.pitch} · ${note.start.toFixed(2)}s → ${note.end.toFixed(2)}s`;
+        const label = this.getPitchLabel(note.pitch);
+        this.dom.noteReadout.textContent = `Pitch ${label} · ${note.start.toFixed(2)}s → ${note.end.toFixed(2)}s`;
+    }
+
+    getPitchLabel(midiNote) {
+        const names = ["c", "c", "d", "d", "e", "f", "f", "g", "g", "a", "a", "b"];
+        return names[midiNote % 12] || "c";
     }
 
     updateSliderBounds() {
