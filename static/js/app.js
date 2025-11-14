@@ -133,6 +133,7 @@ class AnnotationApp {
                 this.wave.pause();
                 this.setPlaying(false);
             } else {
+                this.centerViewOnCursor();
                 this.wave.play();
                 this.setPlaying(true);
             }
@@ -153,6 +154,36 @@ class AnnotationApp {
             this.renderMidi();
             this.renderWaveform();
         });
+
+        this.handleKeydown = (event) => {
+            const isSpace =
+                event.code === "Space" ||
+                event.key === " " ||
+                event.key === "Spacebar";
+            if (!isSpace) return;
+
+            const activeTag =
+                document.activeElement?.tagName?.toLowerCase() || "";
+            const isTyping =
+                activeTag === "input" ||
+                activeTag === "textarea" ||
+                document.activeElement?.isContentEditable;
+
+            if (isTyping) return;
+
+            event.preventDefault();
+            if (!this.waveReady) return;
+
+            if (this.wave.isPlaying()) {
+                this.wave.pause();
+                this.setPlaying(false);
+            } else {
+                this.centerViewOnCursor();
+                this.wave.play();
+                this.setPlaying(true);
+            }
+        };
+        document.addEventListener("keydown", this.handleKeydown);
 
         this.dom.midiWrapper.addEventListener("click", (event) => {
             const rect = this.dom.midiWrapper.getBoundingClientRect();
@@ -213,6 +244,9 @@ class AnnotationApp {
 
     renderNoteButtons() {
         const container = this.dom.noteButtons;
+        if (!container) {
+            return;
+        }
         container.innerHTML = "";
         const fragment = document.createDocumentFragment();
 
@@ -263,6 +297,17 @@ class AnnotationApp {
         }
     }
 
+    centerViewOnCursor() {
+        if (!this.duration) {
+            return;
+        }
+        const desiredStart = Math.min(
+            Math.max(this.currentTime - this.viewSize * 0.5, 0),
+            Math.max(this.duration - this.viewSize, 0)
+        );
+        this.setViewStart(desiredStart, { silentSlider: true });
+    }
+
     setCursorOpacity(value) {
         const cursors = [this.dom.midiCursor, this.dom.waveformCursor];
         cursors.forEach((cursor) => {
@@ -303,8 +348,13 @@ class AnnotationApp {
     setViewStart(start, options = {}) {
         const max = Math.max(this.duration - this.viewSize, 0);
         this.viewStart = Math.min(Math.max(start, 0), max);
-        if (!options.silentSlider) {
-            this.dom.viewportSlider.value = this.viewStart.toFixed(2);
+        const slider = this.dom.viewportSlider;
+        const userInteracting = slider?.matches(":active");
+        if (
+            slider &&
+            (!options.silentSlider || !userInteracting)
+        ) {
+            slider.value = this.viewStart.toFixed(2);
         }
         this.updateViewportLabel();
         this.renderMidi();
@@ -340,7 +390,8 @@ class AnnotationApp {
         ) {
             return;
         }
-        const bucketCount = Math.min(data.min.length, data.max.length);
+        const { min: mins, max: maxs, bucketDuration } = data;
+        const bucketCount = Math.min(mins.length, maxs.length);
         if (!bucketCount || data.bucketDuration <= 0) {
             return;
         }
@@ -365,11 +416,18 @@ class AnnotationApp {
         context.scale(dpr, dpr);
         context.clearRect(0, 0, width, height);
 
+        let globalMax = 0;
+        for (let i = 0; i < bucketCount; i += 1) {
+            const hi = Math.abs(maxs[i] || 0);
+            const lo = Math.abs(mins[i] || 0);
+            if (hi > globalMax) globalMax = hi;
+            if (lo > globalMax) globalMax = lo;
+        }
+        const gain = globalMax > 0 ? 1 / globalMax : 1;
+
         const midY = height / 2;
         const amplitude = (height / 2) * 0.95;
         const secondsPerPixel = this.viewSize / Math.max(width, 1);
-        const { min: mins, max: maxs, bucketDuration } = data;
-
         context.strokeStyle = "#7f55b1";
         context.lineWidth = 1;
         context.beginPath();
@@ -380,8 +438,8 @@ class AnnotationApp {
                 bucketCount - 1,
                 Math.max(0, Math.floor(time / bucketDuration))
             );
-            const peakMax = maxs[idx] || 0;
-            const peakMin = mins[idx] || 0;
+            const peakMax = (maxs[idx] || 0) * gain;
+            const peakMin = (mins[idx] || 0) * gain;
             const top = midY - peakMax * amplitude;
             const bottom = midY - peakMin * amplitude;
             context.moveTo(x, top);

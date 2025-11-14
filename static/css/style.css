@@ -210,7 +210,7 @@ h1, h2, h3 {
 .waveform-wrapper {
     position: relative;
     width: 100%;
-    min-height: 160px;
+    height: clamp(90px, 18vh, 140px);
     border-radius: 1.25rem;
     overflow: hidden;
     background: rgba(255, 255, 255, 0.6);
