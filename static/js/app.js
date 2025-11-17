@@ -26,13 +26,22 @@ class AnnotationApp {
             playButton: document.getElementById("play-pause"),
             prevButton: document.getElementById("jump-prev"),
             nextButton: document.getElementById("jump-next"),
+            annotationNoteLabel: document.getElementById("annotation-note-label"),
+            tonalSelect: document.getElementById("tonal-technique"),
+            articulationSelect: document.getElementById("articulation"),
+            annotationStatus: document.getElementById("annotation-status"),
         };
         this.waveformData = null;
         this.slicePadding =
             typeof config.slicePaddingSeconds === "number"
                 ? config.slicePaddingSeconds
-                : 0.005; 
+                : 0.005;
         this.buttonFlashTimers = new Map();
+        this.selectedNote = null;
+        this.isSavingAnnotation = false;
+        this.statusTimer = null;
+        this.annotationSaveTimer = null;
+        this.suspendAutosave = false;
 
         window.addEventListener("resize", () => {
             if (!this.waveReady) return;
@@ -55,7 +64,14 @@ class AnnotationApp {
         try {
             const response = await fetch(this.config.midiApiUrl);
             const payload = await response.json();
-            this.notes = payload.notes || [];
+            const rawNotes = payload.notes || [];
+            this.notes = rawNotes.map((note) => ({
+                ...note,
+                annotation: {
+                    tonalTechnique: note.annotation?.tonalTechnique || "",
+                    articulation: note.annotation?.articulation || "",
+                },
+            }));
             this.duration = payload.duration || 0;
             if (this.notes.length) {
                 const pitches = this.notes.map((n) => n.pitch);
@@ -177,6 +193,17 @@ class AnnotationApp {
             });
         }
 
+        ["tonalSelect", "articulationSelect"].forEach((key) => {
+            const control = this.dom[key];
+            if (!control) return;
+            ["change", "input"].forEach((eventName) => {
+                control.addEventListener(eventName, () => {
+                    if (this.suspendAutosave) return;
+                    this.queueAnnotationSave();
+                });
+            });
+        });
+
         this.handleKeydown = (event) => {
             const isSpace =
                 event.code === "Space" ||
@@ -275,6 +302,7 @@ class AnnotationApp {
             button.addEventListener("focus", () => this.updateNoteReadout(note));
             button.addEventListener("click", (e) => {
                 e.stopPropagation();
+                this.focusNote(note);
                 this.playSlice(note.start, note.end);
             });
 
@@ -296,7 +324,10 @@ class AnnotationApp {
             const button = document.createElement("button");
             button.className = "note-pill";
             button.textContent = `#${index + 1} · ${this.getPitchLabel(note.pitch)}`;
-            button.addEventListener("click", () => this.playSlice(note.start, note.end));
+            button.addEventListener("click", () => {
+                this.focusNote(note);
+                this.playSlice(note.start, note.end);
+            });
             fragment.appendChild(button);
         });
 
@@ -396,6 +427,7 @@ class AnnotationApp {
         }
 
         if (target) {
+        this.focusNote(target);
             this.playSlice(target.start, target.end);
         }
     }
@@ -417,6 +449,96 @@ class AnnotationApp {
     getPitchLabel(midiNote) {
         const names = ["c", "c", "d", "d", "e", "f", "f", "g", "g", "a", "a", "b"];
         return names[midiNote % 12] || "c";
+    }
+
+    focusNote(note) {
+        if (!note) return;
+        this.selectedNote = note;
+        const label = `${this.getPitchLabel(note.pitch)} · ${note.start.toFixed(2)}s`;
+        if (this.dom.annotationNoteLabel) {
+            this.dom.annotationNoteLabel.textContent = `Selected: ${label}`;
+        }
+        const tonal = note.annotation?.tonalTechnique || "";
+        const articulation = note.annotation?.articulation || "";
+        this.suspendAutosave = true;
+        if (this.dom.tonalSelect) {
+            this.dom.tonalSelect.value = tonal;
+        }
+        if (this.dom.articulationSelect) {
+            this.dom.articulationSelect.value = articulation;
+        }
+        this.suspendAutosave = false;
+        this.setAnnotationStatus("Editing note…", false);
+    }
+
+    queueAnnotationSave() {
+        if (!this.selectedNote || this.isSavingAnnotation) {
+            return;
+        }
+        if (this.annotationSaveTimer) {
+            clearTimeout(this.annotationSaveTimer);
+        }
+        this.annotationSaveTimer = window.setTimeout(() => {
+            this.annotationSaveTimer = null;
+            this.saveAnnotation({ auto: true });
+        }, 250);
+    }
+
+    async saveAnnotation({ auto = false } = {}) {
+        if (!this.config.annotationApiUrl || !this.selectedNote || this.isSavingAnnotation) {
+            return;
+        }
+
+        const tonal = this.dom.tonalSelect?.value || "";
+        const articulation = this.dom.articulationSelect?.value || "";
+
+        const payload = {
+            pitch: this.selectedNote.pitch,
+            start: this.selectedNote.start,
+            end: this.selectedNote.end,
+            tonalTechnique: tonal,
+            articulation,
+        };
+
+        this.isSavingAnnotation = true;
+        this.setAnnotationStatus(auto ? "Saving…" : "Saving annotation…", false);
+
+        try {
+            const response = await fetch(this.config.annotationApiUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+            if (!response.ok) {
+                throw new Error(`Save failed (${response.status})`);
+            }
+            this.selectedNote.annotation = {
+                tonalTechnique: tonal,
+                articulation,
+            };
+            this.setAnnotationStatus(auto ? "Changes autosaved." : "Annotation saved.", false);
+        } catch (error) {
+            console.error("Failed to save annotation", error);
+            this.setAnnotationStatus("Save failed. Please try again.", true);
+        } finally {
+            this.isSavingAnnotation = false;
+        }
+    }
+
+    setAnnotationStatus(message, isError) {
+        if (!this.dom.annotationStatus) return;
+        this.dom.annotationStatus.textContent = message;
+        this.dom.annotationStatus.style.color = isError ? "#e16981" : "var(--muted)";
+        if (this.statusTimer) {
+            clearTimeout(this.statusTimer);
+        }
+        if (!isError && message) {
+            this.statusTimer = window.setTimeout(() => {
+                if (this.dom.annotationStatus) {
+                    this.dom.annotationStatus.textContent = "";
+                }
+            }, 3000);
+        }
     }
 
     updateSliderBounds() {

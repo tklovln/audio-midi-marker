@@ -82,6 +82,45 @@
             </div>
             <div id="note-buttons" class="note-buttons"></div>
         </section> -->
+
+        <section class="panel panel--editor">
+            <div class="panel-head">
+                <div>
+                    <p class="eyebrow">Annotation</p>
+                    <h2>Note details</h2>
+                </div>
+                <p id="annotation-note-label" class="note-readout">Select a note to edit tonal technique or articulation.</p>
+            </div>
+            <div class="annotation-fields">
+                <label class="form-field">
+                    Tonal technique
+                    <select id="tonal-technique">
+                        <option value="">None</option>
+                        <option value="pizzicato">Pizzicato</option>
+                        <option value="harmonics">Harmonics</option>
+                        <option value="muted">Muted</option>
+                        <option value="sul ponticello">Sul ponticello</option>
+                        <option value="sul tasto">Sul tasto</option>
+                    </select>
+                </label>
+                <label class="form-field">
+                    Articulation
+                    <select id="articulation">
+                        <option value="">None</option>
+                        <option value="staccato">Staccato</option>
+                        <option value="legato">Legato</option>
+                        <option value="accent">Accent</option>
+                        <option value="tenuto">Tenuto</option>
+                        <option value="marcato">Marcato</option>
+                    </select>
+                </label>
+            </div>
+            <div class="annotation-actions">
+                <span id="annotation-status" class="annotation-status" role="status" aria-live="polite">
+                    Select a note to annotate. Changes save automatically.
+                </span>
+            </div>
+        </section>
     </main>
 
     <script id="app-config" type="application/json">

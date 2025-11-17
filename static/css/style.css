@@ -330,6 +330,26 @@ h1, h2, h3 {
     gap: 0.75rem;
 }
 
+.panel--editor .annotation-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+}
+
+.annotation-actions {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 1.25rem;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.annotation-status {
+    font-size: 0.9rem;
+    color: var(--muted);
+}
+
 .note-pill {
     border-radius: 999px;
     padding: 0.5rem 1rem;

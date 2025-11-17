@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
@@ -13,6 +14,7 @@ from flask import (
     abort,
     jsonify,
     render_template,
+    request,
     send_file,
     url_for,
 )
@@ -23,6 +25,7 @@ DEFAULT_BPM = 120
 DEFAULT_TEMPO = mido.bpm2tempo(DEFAULT_BPM)
 DEFAULT_VIEW_SECONDS = 10
 WAVEFORM_BUCKETS = 4096
+ANNOTATION_HEADERS = ["pitch", "start", "end", "tonalTechnique", "articulation"]
 
 
 @dataclass
@@ -117,6 +120,41 @@ def midi_notes(song: Song):
 
     notes.sort(key=lambda n: n["start"])
     return notes
+def annotation_file(song: Song) -> Path:
+    return song.midi_path.parent / "annotation.csv"
+
+
+def read_annotations(song: Song):
+    path = annotation_file(song)
+    annotations = {}
+    if not path.exists():
+        return annotations
+
+    with path.open(newline="", encoding="utf-8") as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            try:
+                key = (int(row["pitch"]), float(row["start"]))
+            except (ValueError, KeyError):
+                continue
+            annotations[key] = {
+                "pitch": int(row.get("pitch", 0)),
+                "start": float(row.get("start", 0.0)),
+                "end": float(row.get("end", 0.0)),
+                "tonalTechnique": row.get("tonalTechnique", ""),
+                "articulation": row.get("articulation", ""),
+            }
+    return annotations
+
+
+def write_annotations(song: Song, annotation_map):
+    path = annotation_file(song)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=ANNOTATION_HEADERS)
+        writer.writeheader()
+        for key in sorted(annotation_map.keys(), key=lambda k: (k[0], k[1])):
+            writer.writerow(annotation_map[key])
 
 
 def waveform_points(song: Song, buckets: int = WAVEFORM_BUCKETS):
@@ -189,9 +227,10 @@ def create_app():
             "audioUrl": url_for("audio_file", song_name=song.name),
             "midiApiUrl": url_for("midi_api", song_name=song.name),
             "waveformApiUrl": url_for("waveform_api", song_name=song.name),
+            "annotationApiUrl": url_for("annotation_api", song_name=song.name),
             "windowSeconds": DEFAULT_VIEW_SECONDS,
             "palette": palette,
-            "slicePaddingSeconds": 0.05, # 10ms padding for mido note playback buffer
+            "slicePaddingSeconds": 0.05,  # 50ms padding for midi note playback buffer
         }
 
         return render_template(
@@ -220,8 +259,43 @@ def create_app():
         if not song:
             abort(404)
         notes = midi_notes(song)
+        annotations = read_annotations(song)
+        for note in notes:
+            key = (note["pitch"], note["start"])
+            annotation = annotations.get(key) or {}
+            note["annotation"] = {
+                "tonalTechnique": annotation.get("tonalTechnique", ""),
+                "articulation": annotation.get("articulation", ""),
+            }
         duration = max((note["end"] for note in notes), default=0)
         return jsonify({"notes": notes, "duration": duration})
+
+    @flask_app.route("/api/annotation/<song_name>", methods=["POST"])
+    def annotation_api(song_name: str):
+        song = get_song(song_name)
+        if not song:
+            abort(404)
+        payload = request.get_json() or {}
+        try:
+            pitch = int(payload["pitch"])
+            start = float(payload["start"])
+            end = float(payload["end"])
+        except (KeyError, ValueError, TypeError):
+            abort(400, description="Invalid pitch/start/end")
+
+        tonal = (payload.get("tonalTechnique") or "").strip()
+        articulation = (payload.get("articulation") or "").strip()
+
+        annotations = read_annotations(song)
+        annotations[(pitch, start)] = {
+            "pitch": pitch,
+            "start": start,
+            "end": end,
+            "tonalTechnique": tonal,
+            "articulation": articulation,
+        }
+        write_annotations(song, annotations)
+        return jsonify({"status": "ok"})
 
     @flask_app.route("/api/waveform/<song_name>")
     def waveform_api(song_name: str):
