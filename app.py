@@ -191,6 +191,7 @@ def create_app():
             "waveformApiUrl": url_for("waveform_api", song_name=song.name),
             "windowSeconds": DEFAULT_VIEW_SECONDS,
             "palette": palette,
+            "slicePaddingSeconds": 0.05, # 10ms padding for mido note playback buffer
         }
 
         return render_template(

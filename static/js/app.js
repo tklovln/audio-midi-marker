@@ -26,6 +26,10 @@ class AnnotationApp {
             windowSelect: document.getElementById("window-size"),
         };
         this.waveformData = null;
+        this.slicePadding =
+            typeof config.slicePaddingSeconds === "number"
+                ? config.slicePaddingSeconds
+                : 0.005; 
 
         window.addEventListener("resize", () => {
             if (!this.waveReady) return;
@@ -133,7 +137,7 @@ class AnnotationApp {
                 this.wave.pause();
                 this.setPlaying(false);
             } else {
-                this.centerViewOnCursor();
+                this.centerViewOn(this.currentTime);
                 this.wave.play();
                 this.setPlaying(true);
             }
@@ -178,7 +182,7 @@ class AnnotationApp {
                 this.wave.pause();
                 this.setPlaying(false);
             } else {
-                this.centerViewOnCursor();
+                this.centerViewOn(this.currentTime);
                 this.wave.play();
                 this.setPlaying(true);
             }
@@ -298,15 +302,15 @@ class AnnotationApp {
         }
     }
 
-    centerViewOnCursor() {
-        if (!this.duration) {
+    centerViewOn(time, options = {}) {
+        if (!this.duration || !Number.isFinite(time)) {
             return;
         }
         const desiredStart = Math.min(
-            Math.max(this.currentTime - this.viewSize * 0.5, 0),
+            Math.max(time - this.viewSize * 0.5, 0),
             Math.max(this.duration - this.viewSize, 0)
         );
-        this.setViewStart(desiredStart, { silentSlider: true });
+        this.setViewStart(desiredStart, { silentSlider: options.silentSlider ?? false });
     }
 
     setCursorOpacity(value) {
@@ -374,9 +378,23 @@ class AnnotationApp {
         this.updateCursor(seconds);
     }
 
+    // Playing a slice of the audio waveform from given midi note start and end times
+    // with 10ms padding for mido note playback buffer
+    // and centering the view on the start of the slice
     playSlice(start, end) {
         if (!this.waveReady) return;
-        this.wave.play(start, end);
+        const padding = this.slicePadding;
+        const adjustedStart = Math.max(start - padding, 0);
+        const adjustedEnd = Math.min(end + padding, this.duration);
+        this.centerViewOn(adjustedStart, { silentSlider: false });
+        this.currentTime = adjustedStart;
+        this.updateCursor(this.currentTime);
+        if (adjustedEnd <= adjustedStart) {
+            this.seekTo(adjustedStart);
+            this.wave.play();
+        } else {
+            this.wave.play(adjustedStart, adjustedEnd);
+        }
         this.setPlaying(true);
     }
 
