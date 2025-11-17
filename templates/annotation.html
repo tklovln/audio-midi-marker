@@ -4,6 +4,25 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ song.title }} · Annotator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        plum: '#7f55b1',
+                        lavender: '#9b7ebd',
+                        blush: '#f49bab',
+                        peach: '#ffe1e0',
+                        sand: '#eeece1',
+                        rose: '#e16981',
+                        ink: '#1f1630'
+                    }
+                }
+            }
+        }
+    </script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body class="page page--annotation">
@@ -92,28 +111,20 @@
                 <p id="annotation-note-label" class="note-readout">Select a note to edit tonal technique or articulation.</p>
             </div>
             <div class="annotation-fields">
-                <label class="form-field">
-                    Tonal technique
-                    <select id="tonal-technique">
-                        <option value="">None</option>
-                        <option value="pizzicato">Pizzicato</option>
-                        <option value="harmonics">Harmonics</option>
-                        <option value="muted">Muted</option>
-                        <option value="sul ponticello">Sul ponticello</option>
-                        <option value="sul tasto">Sul tasto</option>
-                    </select>
-                </label>
-                <label class="form-field">
-                    Articulation
-                    <select id="articulation">
-                        <option value="">None</option>
-                        <option value="staccato">Staccato</option>
-                        <option value="legato">Legato</option>
-                        <option value="accent">Accent</option>
-                        <option value="tenuto">Tenuto</option>
-                        <option value="marcato">Marcato</option>
-                    </select>
-                </label>
+                <div class="pie-control flex flex-col items-center gap-4">
+                    <p class="text-sm uppercase tracking-wide text-slate-500">Tonal technique</p>
+                    <div class="pie-chart-wrapper">
+                        <canvas id="pie-tonal"></canvas>
+                    </div>
+                    <span class="pie-selected text-sm text-slate-500" id="pie-tonal-label">None</span>
+                </div>
+                <div class="pie-control flex flex-col items-center gap-4">
+                    <p class="text-sm uppercase tracking-wide text-slate-500">Articulation</p>
+                    <div class="pie-chart-wrapper">
+                        <canvas id="pie-articulation"></canvas>
+                    </div>
+                    <span class="pie-selected text-sm text-slate-500" id="pie-articulation-label">None</span>
+                </div>
             </div>
             <div class="annotation-actions">
                 <span id="annotation-status" class="annotation-status" role="status" aria-live="polite">

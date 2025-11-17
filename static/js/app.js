@@ -27,8 +27,10 @@ class AnnotationApp {
             prevButton: document.getElementById("jump-prev"),
             nextButton: document.getElementById("jump-next"),
             annotationNoteLabel: document.getElementById("annotation-note-label"),
-            tonalSelect: document.getElementById("tonal-technique"),
-            articulationSelect: document.getElementById("articulation"),
+            tonalPie: document.getElementById("pie-tonal"),
+            articulationPie: document.getElementById("pie-articulation"),
+            tonalPieLabel: document.getElementById("pie-tonal-label"),
+            articulationPieLabel: document.getElementById("pie-articulation-label"),
             annotationStatus: document.getElementById("annotation-status"),
         };
         this.waveformData = null;
@@ -37,11 +39,30 @@ class AnnotationApp {
                 ? config.slicePaddingSeconds
                 : 0.005;
         this.buttonFlashTimers = new Map();
+        this.pieColors = ["#ffe1e0", "#eeece1", "#9b7ebd", "#f49bab", "#7f55b1", "#e16981"];
         this.selectedNote = null;
         this.isSavingAnnotation = false;
         this.statusTimer = null;
         this.annotationSaveTimer = null;
         this.suspendAutosave = false;
+        this.pieCharts = {};
+        this.tonalOptions = [
+            { value: "", label: "none", abbrev: "Non" },
+            { value: "pizzicato", label: "pizzicato", abbrev: "PIZ" },
+            { value: "harmonics", label: "harmonics", abbrev: "HAR" },
+            { value: "muted", label: "muted", abbrev: "MUT" },
+            { value: "sul ponticello", label: "sul ponticello", abbrev: "SPT" },
+            { value: "sul tasto", label: "sul tasto", abbrev: "STS" },
+        ];
+        this.articulationOptions = [
+            { value: "", label: "none", abbrev: "NON" },
+            { value: "staccato", label: "staccato", abbrev: "STC" },
+            { value: "legato", label: "legato", abbrev: "LEG" },
+            { value: "accent", label: "accent", abbrev: "ACC" },
+            { value: "tenuto", label: "tenuto", abbrev: "TEN" },
+            { value: "marcato", label: "marcato", abbrev: "MAR" },
+        ];
+        this.pieCharts = {};
 
         window.addEventListener("resize", () => {
             if (!this.waveReady) return;
@@ -193,16 +214,7 @@ class AnnotationApp {
             });
         }
 
-        ["tonalSelect", "articulationSelect"].forEach((key) => {
-            const control = this.dom[key];
-            if (!control) return;
-            ["change", "input"].forEach((eventName) => {
-                control.addEventListener(eventName, () => {
-                    if (this.suspendAutosave) return;
-                    this.queueAnnotationSave();
-                });
-            });
-        });
+        this.setupPieControls();
 
         this.handleKeydown = (event) => {
             const isSpace =
@@ -381,6 +393,144 @@ class AnnotationApp {
         this.setViewStart(desiredStart, { silentSlider: options.silentSlider ?? false });
     }
 
+    setupPieControls() {
+        this.createPieChart("tonal", this.dom.tonalPie, this.dom.tonalPieLabel, this.tonalOptions);
+        this.createPieChart(
+            "articulation",
+            this.dom.articulationPie,
+            this.dom.articulationPieLabel,
+            this.articulationOptions
+        );
+    }
+
+    createPieChart(type, canvas, labelEl, optionList) {
+        if (!canvas || !window.Chart) return;
+        const ctx = canvas.getContext("2d");
+        const datasetColors = optionList.map((_, idx) => this.pieColors[idx % this.pieColors.length]);
+
+        const chart = new Chart(ctx, {
+            type: "doughnut",
+            data: {
+                labels: optionList.map((opt) => opt.label),
+                datasets: [
+                    {
+                        data: optionList.map(() => 1),
+                        backgroundColor: datasetColors,
+                        borderColor: (ctx) =>
+                            ctx.dataIndex === ctx.chart.$selectedIndex ? "black" : "rgba(255,255,255,0.85)",
+                        borderWidth: (ctx) => (ctx.dataIndex === ctx.chart.$selectedIndex ? 2 : 1),
+                        hoverBorderColor: "#1f1630",
+                        hoverBorderWidth: 1,
+                        spacing: 4,
+                    },
+                ],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                cutout: "30%",
+                rotation: -90,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: (context) => optionList[context.dataIndex]?.label || "",
+                        },
+                    },
+                },
+                onClick: (event, elements) => {
+                    if (!elements.length) return;
+                    const index = elements[0].index;
+                    const value = optionList[index].value;
+                    this.setPieSelection(type, value);
+                    if (!this.suspendAutosave) {
+                        this.queueAnnotationSave();
+                    }
+                },
+                layout: {
+                    padding: 0,
+                },
+            },
+            plugins: [
+                {
+                    id: `${type}-labels`,
+                    afterDatasetsDraw: (chartInstance) => {
+                        const { ctx } = chartInstance;
+                        const meta = chartInstance.getDatasetMeta(0);
+                        meta.data.forEach((arc, idx) => {
+                            const code =
+                                optionList[idx]?.abbrev ||
+                                optionList[idx]?.label?.slice(0, 3)?.toUpperCase() ||
+                                "";
+                            const geometry = arc.getProps(["x", "y", "startAngle", "endAngle", "innerRadius", "outerRadius"], true);
+                            const angle = (geometry.startAngle + geometry.endAngle) / 2;
+                            const radius = geometry.innerRadius + (geometry.outerRadius - geometry.innerRadius) * 0.65;
+                            const x = geometry.x + Math.cos(angle) * radius;
+                            const y = geometry.y + Math.sin(angle) * radius;
+                            ctx.save();
+                            ctx.font = "bold 13px 'Space Grotesk', 'Inter', sans-serif";
+                            ctx.fillStyle =
+                                chartInstance.$selectedIndex === idx
+                                    ? "rgba(255,255,255,0.85)"
+                                    : "#1f1630";
+                            if (chartInstance.$selectedIndex === idx) {
+                                ctx.strokeStyle = "#1f1630";
+                                ctx.lineWidth = 2;
+                                // ctx.strokeText(code, x, y);
+                            }
+                            ctx.textAlign = "center";
+                            ctx.textBaseline = "middle";
+                            ctx.fillText(code, x, y);
+                            ctx.restore();
+                        });
+                    },
+                },
+            ],
+        });
+
+        chart.$optionsList = optionList;
+        chart.$labelEl = labelEl;
+        chart.$selectedIndex = optionList.findIndex((opt) => opt.value === "");
+        chart.$selectedValue = optionList[chart.$selectedIndex]?.value || "";
+        this.pieCharts[type] = chart;
+        this.updatePieLabel(type, chart.$selectedValue);
+    }
+
+    updatePieLabel(type, value) {
+        const chart = this.pieCharts[type];
+        if (!chart) return;
+        const option = chart.$optionsList?.find((opt) => opt.value === value);
+        if (chart.$labelEl) {
+            chart.$labelEl.textContent = option?.label || "none";
+        }
+    }
+
+    setPieSelection(type, value, options = {}) {
+        const chart = this.pieCharts[type];
+        if (!chart) return;
+        const index = chart.$optionsList.findIndex((opt) => opt.value === value);
+        chart.$selectedIndex = index;
+        chart.$selectedValue = value || "";
+        this.updatePieLabel(type, value || "");
+        chart.update("none");
+
+        if (!options.skipNoteUpdate && this.selectedNote) {
+            const updated = { ...this.selectedNote.annotation };
+            if (type === "tonal") {
+                updated.tonalTechnique = value || "";
+            } else {
+                updated.articulation = value || "";
+            }
+            this.selectedNote.annotation = updated;
+        }
+    }
+
+    getPieSelection(type) {
+        const chart = this.pieCharts[type];
+        if (!chart) return "";
+        return chart.$selectedValue || "";
+    }
+
     setCursorOpacity(value) {
         const cursors = [this.dom.midiCursor, this.dom.waveformCursor];
         cursors.forEach((cursor) => {
@@ -461,18 +611,14 @@ class AnnotationApp {
         const tonal = note.annotation?.tonalTechnique || "";
         const articulation = note.annotation?.articulation || "";
         this.suspendAutosave = true;
-        if (this.dom.tonalSelect) {
-            this.dom.tonalSelect.value = tonal;
-        }
-        if (this.dom.articulationSelect) {
-            this.dom.articulationSelect.value = articulation;
-        }
+        this.setPieSelection("tonal", tonal, { skipNoteUpdate: true });
+        this.setPieSelection("articulation", articulation, { skipNoteUpdate: true });
         this.suspendAutosave = false;
         this.setAnnotationStatus("Editing note…", false);
     }
 
     queueAnnotationSave() {
-        if (!this.selectedNote || this.isSavingAnnotation) {
+        if (!this.selectedNote || this.isSavingAnnotation || this.suspendAutosave) {
             return;
         }
         if (this.annotationSaveTimer) {
@@ -489,8 +635,8 @@ class AnnotationApp {
             return;
         }
 
-        const tonal = this.dom.tonalSelect?.value || "";
-        const articulation = this.dom.articulationSelect?.value || "";
+        const tonal = this.getPieSelection("tonal") || "";
+        const articulation = this.getPieSelection("articulation") || "";
 
         const payload = {
             pitch: this.selectedNote.pitch,
