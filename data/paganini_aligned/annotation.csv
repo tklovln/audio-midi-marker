@@ -1,5 +1,7 @@
 pitch,start,end,tonalTechnique,articulation
+57,19.847727,19.929545,pizzicato,
 63,0.843182,0.911364,pizzicato,
+63,19.975,20.045455,,legato
 64,0.0,0.077273,pizzicato,staccato
 64,0.75,0.795455,pizzicato,
 64,6.554545,6.606818,sul ponticello,
@@ -8,7 +10,9 @@ pitch,start,end,tonalTechnique,articulation
 71,0.234091,0.290909,muted,staccato
 71,0.552273,0.604545,sul ponticello,legato
 71,5.038636,5.086364,harmonics,accent
+71,20.093182,20.143182,,tenuto
 75,2.677273,2.718182,pizzicato,staccato
 76,0.343182,0.384091,muted,staccato
 76,0.436364,0.5,,
 76,3.565909,3.611364,,accent
+90,19.388636,19.702273,sul ponticello,

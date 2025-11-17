@@ -1,3 +1,21 @@
+.midi-controls {
+    margin-top: 1.75rem;
+    padding: 1.25rem;
+    border: 1px solid rgba(127, 85, 177, 0.18);
+    border-radius: 1.25rem;
+    background: rgba(255, 255, 255, 0.85);
+    box-shadow: 0 18px 35px rgba(31, 22, 48, 0.08);
+}
+
+.midi-controls input[type="range"] {
+    accent-color: var(--plum);
+}
+
+.midi-controls .viewport-nav {
+    justify-content: space-between;
+    margin-top: 1rem;
+}
+
 @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&display=swap");
 
 :root {
@@ -295,6 +313,11 @@ h1, h2, h3 {
     margin-top: 1rem;
     justify-content: center;
     align-items: center;
+}
+
+.panel--midi .viewport-nav {
+    justify-content: space-between;
+    flex-wrap: wrap;
 }
 
 .nav-button {
