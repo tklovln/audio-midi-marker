@@ -11,7 +11,6 @@ class AnnotationApp {
         this.currentTime = 0;
 
         this.dom = {
-            playButton: document.getElementById("play-pause"),
             waveformCanvas: document.getElementById("waveform-canvas"),
             waveformAudio: document.getElementById("waveform-audio"),
             waveformWrapper: document.getElementById("waveform-wrapper"),
@@ -24,12 +23,16 @@ class AnnotationApp {
             viewportSlider: document.getElementById("viewport-slider"),
             viewportLabel: document.getElementById("viewport-label"),
             windowSelect: document.getElementById("window-size"),
+            playButton: document.getElementById("play-pause"),
+            prevButton: document.getElementById("jump-prev"),
+            nextButton: document.getElementById("jump-next"),
         };
         this.waveformData = null;
         this.slicePadding =
             typeof config.slicePaddingSeconds === "number"
                 ? config.slicePaddingSeconds
                 : 0.005; 
+        this.buttonFlashTimers = new Map();
 
         window.addEventListener("resize", () => {
             if (!this.waveReady) return;
@@ -132,6 +135,7 @@ class AnnotationApp {
         this.wave.on("finish", () => this.setPlaying(false));
 
         this.dom.playButton.addEventListener("click", () => {
+            this.flashButton(this.dom.playButton);
             if (!this.waveReady) return;
             if (this.wave.isPlaying()) {
                 this.wave.pause();
@@ -159,11 +163,43 @@ class AnnotationApp {
             this.renderWaveform();
         });
 
+        if (this.dom.prevButton) {
+            this.dom.prevButton.addEventListener("click", () => {
+                this.flashButton(this.dom.prevButton);
+                this.playNeighborNote("prev");
+            });
+        }
+
+        if (this.dom.nextButton) {
+            this.dom.nextButton.addEventListener("click", () => {
+                this.flashButton(this.dom.nextButton);
+                this.playNeighborNote("next");
+            });
+        }
+
         this.handleKeydown = (event) => {
             const isSpace =
                 event.code === "Space" ||
                 event.key === " " ||
                 event.key === "Spacebar";
+
+            if (!isSpace && event.code !== "ArrowRight" && event.code !== "ArrowLeft") {
+                return;
+            }
+            if (event.code === "ArrowRight") {
+                event.preventDefault();
+                this.flashButton(this.dom.nextButton);
+                this.playNeighborNote("next");
+                return;
+            }
+
+            if (event.code === "ArrowLeft") {
+                event.preventDefault();
+                this.flashButton(this.dom.prevButton);
+                this.playNeighborNote("prev");
+                return;
+            }
+
             if (!isSpace) return;
 
             const activeTag =
@@ -176,6 +212,7 @@ class AnnotationApp {
             if (isTyping) return;
 
             event.preventDefault();
+            this.flashButton(this.dom.playButton);
             if (!this.waveReady) return;
 
             if (this.wave.isPlaying()) {
@@ -335,6 +372,46 @@ class AnnotationApp {
         if (!this.dom.noteReadout) return;
         const label = this.getPitchLabel(note.pitch);
         this.dom.noteReadout.textContent = `Pitch ${label} · ${note.start.toFixed(2)}s → ${note.end.toFixed(2)}s`;
+    }
+
+    playNeighborNote(direction) {
+        if (!this.notes.length) return;
+        const epsilon = 0.0005;
+        const time = this.currentTime;
+        let target = null;
+
+        if (direction === "next") {
+            target = this.notes.find((note) => note.start > time + epsilon) ?? null;
+        } else {
+            for (let i = this.notes.length - 1; i >= 0; i -= 1) {
+                if (this.notes[i].start < time - epsilon) {
+                    target = this.notes[i];
+                    break;
+                }
+            }
+        }
+
+        if (!target) {
+            target = direction === "next" ? this.notes[this.notes.length - 1] : this.notes[0];
+        }
+
+        if (target) {
+            this.playSlice(target.start, target.end);
+        }
+    }
+
+    flashButton(button) {
+        if (!button) return;
+        button.classList.add("is-pressed");
+        const existing = this.buttonFlashTimers.get(button);
+        if (existing) {
+            clearTimeout(existing);
+        }
+        const timer = window.setTimeout(() => {
+            button.classList.remove("is-pressed");
+            this.buttonFlashTimers.delete(button);
+        }, 180);
+        this.buttonFlashTimers.set(button, timer);
     }
 
     getPitchLabel(midiNote) {
