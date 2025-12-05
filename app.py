@@ -34,6 +34,8 @@ class Song:
     title: str
     midi_path: Path
     audio_path: Path
+    video_path: Path | None = None
+    video_path: Path | None = None
 
 
 def _format_title(name: str) -> str:
@@ -50,13 +52,15 @@ def discover_songs() -> List[Song]:
         if not folder.is_dir():
             continue
 
-        midi_path = next(folder.glob("*_midi.mid"), None)
+        midi_path = next(folder.glob("*.mid"), None)
         audio_path = None
         for ext in ("mp3", "wav"):
-            audio_candidate = next(folder.glob(f"*_audio.{ext}"), None)
+            audio_candidate = next(folder.glob(f"*.{ext}"), None)
             if audio_candidate:
                 audio_path = audio_candidate
                 break
+        
+        video_path = next(folder.glob("*.mp4"), None)
 
         if midi_path and audio_path:
             songs.append(
@@ -65,6 +69,7 @@ def discover_songs() -> List[Song]:
                     title=_format_title(folder.name),
                     midi_path=midi_path,
                     audio_path=audio_path,
+                    video_path=video_path,
                 )
             )
 
@@ -225,6 +230,7 @@ def create_app():
         app_config = {
             "songName": song.name,
             "audioUrl": url_for("audio_file", song_name=song.name),
+            "videoUrl": url_for("video_file", song_name=song.name) if song.video_path else None,
             "midiApiUrl": url_for("midi_api", song_name=song.name),
             "waveformApiUrl": url_for("waveform_api", song_name=song.name),
             "annotationApiUrl": url_for("annotation_api", song_name=song.name),
@@ -252,6 +258,13 @@ def create_app():
         if not song:
             abort(404)
         return send_file(song.midi_path, mimetype=_guess_mimetype(song.midi_path))
+
+    @flask_app.route("/video/<song_name>")
+    def video_file(song_name: str):
+        song = get_song(song_name)
+        if not song or not song.video_path:
+            abort(404)
+        return send_file(song.video_path, mimetype=_guess_mimetype(song.video_path))
 
     @flask_app.route("/api/midi/<song_name>")
     def midi_api(song_name: str):

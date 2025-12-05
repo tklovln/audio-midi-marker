@@ -32,6 +32,8 @@ class AnnotationApp {
             tonalPieLabel: document.getElementById("pie-tonal-label"),
             articulationPieLabel: document.getElementById("pie-articulation-label"),
             annotationStatus: document.getElementById("annotation-status"),
+            videoPanel: document.getElementById("video-panel"),
+            videoPlayer: document.getElementById("video-player"),
         };
         this.waveformData = null;
         this.slicePadding =
@@ -50,17 +52,17 @@ class AnnotationApp {
             { value: "", label: "none", abbrev: "Non" },
             { value: "pizzicato", label: "pizzicato", abbrev: "PIZ" },
             { value: "harmonics", label: "harmonics", abbrev: "HAR" },
-            { value: "muted", label: "muted", abbrev: "MUT" },
-            { value: "sul ponticello", label: "sul ponticello", abbrev: "SPT" },
-            { value: "sul tasto", label: "sul tasto", abbrev: "STS" },
+            // { value: "muted", label: "muted", abbrev: "MUT" },
+            // { value: "sul ponticello", label: "sul ponticello", abbrev: "SPT" },
+            // { value: "sul tasto", label: "sul tasto", abbrev: "STS" },
         ];
         this.articulationOptions = [
             { value: "", label: "none", abbrev: "NON" },
             { value: "staccato", label: "staccato", abbrev: "STC" },
-            { value: "legato", label: "legato", abbrev: "LEG" },
             { value: "accent", label: "accent", abbrev: "ACC" },
-            { value: "tenuto", label: "tenuto", abbrev: "TEN" },
-            { value: "marcato", label: "marcato", abbrev: "MAR" },
+            // { value: "legato", label: "legato", abbrev: "LEG" },
+            // { value: "tenuto", label: "tenuto", abbrev: "TEN" },
+            // { value: "marcato", label: "marcato", abbrev: "MAR" },
         ];
         this.pieCharts = {};
 
@@ -74,6 +76,7 @@ class AnnotationApp {
         await this.loadMidi();
         await this.loadWaveform();
         this.updateSliderBounds();
+        this.setupVideo();
         this.setupWaveform();
         this.setupControls();
         this.renderNoteButtons();
@@ -137,6 +140,15 @@ class AnnotationApp {
         }
     }
 
+    setupVideo() {
+        if (!this.config.videoUrl || !this.dom.videoPlayer) return;
+        
+        this.dom.videoPanel.hidden = false;
+        this.dom.videoPlayer.src = this.config.videoUrl;
+        // Ensure muted as requested
+        this.dom.videoPlayer.muted = true;
+    }
+
     setupWaveform() {
         if (!window.WaveSurfer) {
             console.error("WaveSurfer is not available");
@@ -166,10 +178,26 @@ class AnnotationApp {
             this.renderWaveform();
         });
 
-        this.wave.on("audioprocess", (time) => this.updateCursor(time));
-        this.wave.on("seek", () => this.updateCursor(this.wave.getCurrentTime()));
-        this.wave.on("interaction", () => this.updateCursor(this.wave.getCurrentTime()));
+        this.wave.on("audioprocess", (time) => {
+            this.updateCursor(time);
+            this.syncVideo(time);
+        });
+        this.wave.on("seek", () => {
+            this.updateCursor(this.wave.getCurrentTime());
+            this.syncVideo(this.wave.getCurrentTime(), true);
+        });
+        this.wave.on("interaction", () => {
+            this.updateCursor(this.wave.getCurrentTime());
+            this.syncVideo(this.wave.getCurrentTime(), true);
+        });
         this.wave.on("finish", () => this.setPlaying(false));
+
+        this.wave.on("play", () => {
+            if (this.dom.videoPlayer) this.dom.videoPlayer.play();
+        });
+        this.wave.on("pause", () => {
+            if (this.dom.videoPlayer) this.dom.videoPlayer.pause();
+        });
 
         this.dom.playButton.addEventListener("click", () => {
             this.flashButton(this.dom.playButton);
@@ -265,21 +293,53 @@ class AnnotationApp {
         };
         document.addEventListener("keydown", this.handleKeydown);
 
-        this.dom.midiWrapper.addEventListener("click", (event) => {
-            const rect = this.dom.midiWrapper.getBoundingClientRect();
-            const ratio = (event.clientX - rect.left) / rect.width;
-            const target = this.viewStart + ratio * this.viewSize;
-            this.seekTo(target);
-        });
+        this.setupScrubbing();
+    }
 
-        if (this.dom.waveformWrapper) {
-            this.dom.waveformWrapper.addEventListener("click", (event) => {
-                const rect = this.dom.waveformWrapper.getBoundingClientRect();
-                const ratio = (event.clientX - rect.left) / rect.width;
-                const target = this.viewStart + ratio * this.viewSize;
-                this.seekTo(target);
+    setupScrubbing() {
+        const containers = [this.dom.midiWrapper, this.dom.waveformWrapper];
+
+        containers.forEach((container) => {
+            if (!container) return;
+
+            container.addEventListener("mousedown", (e) => {
+                if (e.button !== 0) return;
+
+                const wasPlaying = this.wave.isPlaying();
+                if (wasPlaying) {
+                    this.wave.pause();
+                    this.setPlaying(false);
+                }
+
+                const rect = container.getBoundingClientRect();
+
+                const updateTime = (evt) => {
+                    const ratio = (evt.clientX - rect.left) / rect.width;
+                    const clampedRatio = Math.max(0, Math.min(1, ratio));
+                    const target = this.viewStart + clampedRatio * this.viewSize;
+                    this.seekTo(target);
+                };
+
+                updateTime(e);
+
+                const onMouseMove = (evt) => {
+                    evt.preventDefault();
+                    window.requestAnimationFrame(() => updateTime(evt));
+                };
+
+                const onMouseUp = () => {
+                    window.removeEventListener("mousemove", onMouseMove);
+                    window.removeEventListener("mouseup", onMouseUp);
+                    if (wasPlaying) {
+                        this.wave.play();
+                        this.setPlaying(true);
+                    }
+                };
+
+                window.addEventListener("mousemove", onMouseMove);
+                window.addEventListener("mouseup", onMouseUp);
             });
-        }
+        });
     }
 
     renderMidi() {
@@ -379,6 +439,17 @@ class AnnotationApp {
             if (Math.abs(autoStart - this.viewStart) >= 0.1) {
                 this.setViewStart(autoStart, { silentSlider: true });
             }
+        }
+    }
+
+    syncVideo(time, force = false) {
+        const video = this.dom.videoPlayer;
+        if (!video || !this.config.videoUrl) return;
+
+        // Only sync if difference is significant (> 0.1s) to avoid jitter
+        // or if forced (e.g. on seek)
+        if (force || Math.abs(video.currentTime - time) > 0.15) {
+            video.currentTime = time;
         }
     }
 
@@ -721,6 +792,7 @@ class AnnotationApp {
         if (!this.waveReady) return;
         this.wave.setTime(Math.max(0, Math.min(seconds, this.duration)));
         this.updateCursor(seconds);
+        this.syncVideo(seconds, true);
     }
 
     // Playing a slice of the audio waveform from given midi note start and end times
