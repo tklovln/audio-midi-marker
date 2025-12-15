@@ -34,8 +34,13 @@ class AnnotationApp {
             annotationStatus: document.getElementById("annotation-status"),
             videoPanel: document.getElementById("video-panel"),
             videoPlayer: document.getElementById("video-player"),
+            videoOverlay: document.getElementById("video-overlay"),
+            trackingCanvas: document.getElementById("tracking-canvas"),
         };
         this.waveformData = null;
+        this.hands = null;
+        this.handsReady = false;
+        this.handsError = false;
         this.slicePadding =
             typeof config.slicePaddingSeconds === "number"
                 ? config.slicePaddingSeconds
@@ -69,6 +74,9 @@ class AnnotationApp {
         window.addEventListener("resize", () => {
             if (!this.waveReady) return;
             window.requestAnimationFrame(() => this.renderWaveform());
+            if (this.dom.videoOverlay) {
+                this.resizeCanvas();
+            }
         });
     }
 
@@ -147,6 +155,158 @@ class AnnotationApp {
         this.dom.videoPlayer.src = this.config.videoUrl;
         // Ensure muted as requested
         this.dom.videoPlayer.muted = true;
+
+        const onReady = () => {
+            this.resizeCanvas();
+            this.resizeTrackingCanvas();
+            this.setupMediaPipe();
+        };
+        this.dom.videoPlayer.addEventListener("loadedmetadata", onReady, { once: true });
+        this.dom.videoPlayer.addEventListener("loadeddata", onReady, { once: true });
+
+        if (window.ResizeObserver) {
+            this.videoResizeObserver = new ResizeObserver(() => {
+                this.resizeCanvas();
+                this.resizeTrackingCanvas();
+            });
+            this.videoResizeObserver.observe(this.dom.videoPlayer);
+        }
+    }
+    
+    resizeCanvas() {
+        const video = this.dom.videoPlayer;
+        const canvas = this.dom.videoOverlay;
+        const wrapper = this.dom.videoPanel?.querySelector(".video-wrapper");
+        if (!video || !canvas || !wrapper) return;
+
+        const videoRect = video.getBoundingClientRect();
+        const parentRect = wrapper.getBoundingClientRect();
+
+        const width = Math.max(1, Math.round(videoRect.width));
+        const height = Math.max(1, Math.round(videoRect.height));
+        const offsetX = videoRect.left - parentRect.left;
+        const offsetY = videoRect.top - parentRect.top;
+
+        // Position canvas exactly over the rendered video area
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        canvas.style.left = `${offsetX}px`;
+        canvas.style.top = `${offsetY}px`;
+
+        // Internal resolution matches rendered size (CSS px) to align landmarks
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+            ctx.clearRect(0, 0, width, height);
+        }
+    }
+
+    resizeTrackingCanvas() {
+        const canvas = this.dom.trackingCanvas;
+        if (!canvas) return;
+        const width = Math.max(1, Math.round(canvas.clientWidth || 640));
+        const height = Math.max(1, Math.round(canvas.clientHeight || width * 0.5625));
+        if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+        }
+    }
+
+    setupMediaPipe() {
+        if (this.hands || this.handsError) return;
+        if (!window.Hands) {
+            console.warn("MediaPipe Hands not loaded");
+            this.handsError = true;
+            return;
+        }
+
+        const HANDS_VERSION = "0.4.1646424915";
+
+        try {
+            this.hands = new Hands({
+                locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${HANDS_VERSION}/${file}`;
+                },
+            });
+
+            this.hands.setOptions({
+                maxNumHands: 2,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5,
+            });
+        } catch (e) {
+            console.warn("MediaPipe init error:", e);
+            this.handsError = true;
+            return;
+        }
+
+        this.hands.onResults((results) => {
+            this.handsReady = true;
+            this.onHandsResults(results);
+        });
+
+        const processVideo = async () => {
+            if (this.handsError) return;
+            const video = this.dom.videoPlayer;
+            if (video && video.readyState >= 2 && !video.paused && !video.ended) {
+                try {
+                    await this.hands.send({ image: video });
+                } catch (e) {
+                    console.warn("MediaPipe error:", e);
+                    this.handsError = true;
+                    return;
+                }
+            }
+            if (this.dom.videoPanel && !this.dom.videoPanel.hidden) {
+                requestAnimationFrame(processVideo);
+            }
+        };
+        requestAnimationFrame(processVideo);
+
+        this.dom.videoPlayer.addEventListener("seeked", async () => {
+            if (this.handsError) return;
+            const video = this.dom.videoPlayer;
+            if (video && video.readyState >= 2) {
+                try {
+                    await this.hands.send({ image: video });
+                } catch (e) {
+                    console.warn("MediaPipe seek error:", e);
+                    this.handsError = true;
+                }
+            }
+        });
+    }
+
+    onHandsResults(results) {
+        if (!this.handsReady) return;
+        const video = this.dom.videoPlayer;
+        const canvas = this.dom.trackingCanvas;
+        if (!canvas || !video || !video.videoWidth || !video.videoHeight) return;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        // Fit video frame into tracking canvas preserving aspect ratio
+        const aspect = video.videoWidth / video.videoHeight;
+        const targetW = Math.max(1, Math.round(canvas.clientWidth || canvas.width || video.videoWidth));
+        const targetH = Math.max(1, Math.round(targetW / aspect));
+        if (canvas.width !== targetW || canvas.height !== targetH) {
+            canvas.width = targetW;
+            canvas.height = targetH;
+        }
+
+        ctx.save();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        if (results.multiHandLandmarks) {
+            for (const landmarks of results.multiHandLandmarks) {
+                drawConnectors(ctx, landmarks, HAND_CONNECTIONS, { color: "#00FF00", lineWidth: 2 });
+                drawLandmarks(ctx, landmarks, { color: "#FF0000", lineWidth: 1, radius: 3 });
+            }
+        }
+        ctx.restore();
     }
 
     setupWaveform() {

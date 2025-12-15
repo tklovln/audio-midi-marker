@@ -37,17 +37,30 @@
     </header>
 
     <main id="annotation-app" class="annotation-app">
-        <section class="panel panel--video" id="video-panel" hidden>
-            <div class="panel-head">
-                <div>
-                    <p class="eyebrow">Video</p>
-                    <h2>Playback</h2>
+        <div style="display: flex; gap: 1.25rem; align-items: flex-start; flex-wrap: wrap;">
+            <section class="panel panel--video" id="video-panel" hidden style="flex: 1 1 55%; min-width: 320px;">
+                <div class="panel-head">
+                    <div>
+                        <p class="eyebrow">Video</p>
+                        <h2>Playback</h2>
+                    </div>
                 </div>
-            </div>
-            <div class="video-wrapper" style="background: #000; width: 100%; max-height: 400px; display: flex; justify-content: center;">
-                 <video id="video-player" style="max-width: 100%; max-height: 400px;" playsinline muted></video>
-            </div>
-        </section>
+                <div class="video-wrapper" style="position: relative; background: #000; width: 100%; max-height: 400px; display: flex; justify-content: center;">
+                     <video id="video-player" style="display: block; width: 100%; height: auto; max-height: 400px; object-fit: contain;" playsinline muted></video>
+                     <canvas id="video-overlay" style="position: absolute; top: 0; left: 0; pointer-events: none;"></canvas>
+                </div>
+            </section>
+
+            <section class="panel panel--tracking" id="tracking-panel" style="flex: 1 1 40%; min-width: 260px;">
+                <div class="panel-head">
+                    <div>
+                        <p class="eyebrow">Tracking</p>
+                        <h2>Finger Tracking</h2>
+                    </div>
+                </div>
+                <canvas id="tracking-canvas" style="width: 100%; height: auto; background: #0a0a0a; border-radius: 12px;"></canvas>
+            </section>
+        </div>
 
         <section class="panel panel--waveform">
             <div class="panel-head">
@@ -150,6 +163,9 @@
     <script id="app-config" type="application/json">
         {{ app_config | tojson | safe }}
     </script>
+    <!-- Pin Hands; drawing_utils served unpinned (older versions not published with matching tag) -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/wavesurfer.js@7/dist/wavesurfer.min.js"></script>
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
