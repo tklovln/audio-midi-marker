@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import mimetypes
 import csv
+import json
+import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Tuple
 
 import numpy as np
 import mido
@@ -18,6 +19,7 @@ from flask import (
     send_file,
     url_for,
 )
+from ai_fingering import generate_predictions, note_key_from_parts
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -25,22 +27,152 @@ DEFAULT_BPM = 120
 DEFAULT_TEMPO = mido.bpm2tempo(DEFAULT_BPM)
 DEFAULT_VIEW_SECONDS = 10
 WAVEFORM_BUCKETS = 4096
-ANNOTATION_HEADERS = ["pitch", "start", "end", "tonalTechnique", "articulation"]
+ANNOTATION_HEADERS = [
+    "pitch",
+    "start",
+    "end",
+    "tonalTechnique",
+    "articulation",
+    "stringId",
+    "position",
+    "finger",
+]
+
+
+def _safe_int(value, default=None):
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def empty_annotation(pitch: int, start: float, end: float):
+    return {
+        "pitch": pitch,
+        "start": start,
+        "end": end,
+        "tonalTechnique": "",
+        "articulation": "",
+        "stringId": None,
+        "position": None,
+        "finger": None,
+    }
+
+
+def merge_annotation(existing: dict, updates: dict):
+    merged = existing.copy()
+    for field in ["pitch", "start", "end"]:
+        if field in updates:
+            merged[field] = updates[field]
+    for field in ["tonalTechnique", "articulation", "stringId", "position", "finger"]:
+        if updates.get(field) is not None:
+            merged[field] = updates[field]
+    return merged
 
 
 @dataclass
 class Song:
     name: str
     title: str
+    composer: str
+    song_name: str
+    performer: str
     midi_path: Path
     audio_path: Path
     video_path: Path | None = None
-    video_path: Path | None = None
+    completed: bool = False
 
 
 def _format_title(name: str) -> str:
     # Simple title formatting for nicer display
     return name.replace("_", " ")
+
+
+def _status_path(folder: Path) -> Path:
+    return folder / "status.json"
+
+
+def read_completed_status(folder: Path) -> bool:
+    """
+    Manual completion flag stored per piece folder in status.json:
+      { "completed": true/false }
+    """
+    try:
+        path = _status_path(folder)
+        if not path.exists():
+            return False
+        payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+        return bool(payload.get("completed"))
+    except Exception:
+        return False
+
+
+def write_completed_status(folder: Path, completed: bool) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    path = _status_path(folder)
+    path.write_text(json.dumps({"completed": bool(completed)}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _parse_song_folder_name(folder_name: str) -> Tuple[str, str, str]:
+    """
+    Expected folder structure: {Composer}_{Song_name}_{Performer}
+    Example: Paganini_Op01-01_AlicanSuner
+
+    We treat the first token as composer and the last token as performer,
+    joining everything in between as the song_name to preserve underscores.
+    """
+    parts = [p for p in (folder_name or "").split("_") if p]
+    if len(parts) >= 3:
+        composer = parts[0]
+        performer = parts[-1]
+        song_name = "_".join(parts[1:-1])
+        return composer, song_name, performer
+    if len(parts) == 2:
+        return parts[0], parts[1], ""
+    if len(parts) == 1:
+        return parts[0], parts[0], ""
+    return "Unknown", folder_name or "Unknown", ""
+
+
+def build_song_tree(songs: List[Song]):
+    """
+    Returns a structure suitable for Jinja rendering:
+    [
+      { composer: str, songs: [ { song_name: str, title: str, performers: [Song, ...] }, ... ] },
+      ...
+    ]
+    """
+    grouped: Dict[str, Dict[str, List[Song]]] = {}
+    for song in songs:
+        composer = song.composer or "Unknown"
+        piece = song.song_name or song.name
+        grouped.setdefault(composer, {}).setdefault(piece, []).append(song)
+
+    result = []
+    for composer in sorted(grouped.keys(), key=lambda s: (s or "").lower()):
+        piece_map = grouped[composer]
+        pieces = []
+        for piece in sorted(piece_map.keys(), key=lambda s: (s or "").lower()):
+            performers = sorted(
+                piece_map[piece],
+                key=lambda s: ((s.performer or "").lower(), (s.name or "").lower()),
+            )
+            pieces.append(
+                {
+                    "song_name": piece,
+                    "title": _format_title(piece),
+                    "performers": performers,
+                }
+            )
+        result.append({"composer": composer, "songs": pieces})
+    return result
 
 
 def discover_songs() -> List[Song]:
@@ -52,6 +184,8 @@ def discover_songs() -> List[Song]:
         if not folder.is_dir():
             continue
 
+        composer, song_name, performer = _parse_song_folder_name(folder.name)
+        completed = read_completed_status(folder)
         midi_path = next(folder.glob("*.mid"), None)
         audio_path = None
         for ext in ("mp3", "wav"):
@@ -66,10 +200,14 @@ def discover_songs() -> List[Song]:
             songs.append(
                 Song(
                     name=folder.name,
-                    title=_format_title(folder.name),
+                    title=_format_title(song_name),
+                    composer=composer,
+                    song_name=song_name,
+                    performer=performer,
                     midi_path=midi_path,
                     audio_path=audio_path,
                     video_path=video_path,
+                    completed=completed,
                 )
             )
 
@@ -142,12 +280,16 @@ def read_annotations(song: Song):
                 key = (int(row["pitch"]), float(row["start"]))
             except (ValueError, KeyError):
                 continue
+            string_id = _safe_int(row.get("stringId"))
             annotations[key] = {
                 "pitch": int(row.get("pitch", 0)),
                 "start": float(row.get("start", 0.0)),
                 "end": float(row.get("end", 0.0)),
                 "tonalTechnique": row.get("tonalTechnique", ""),
                 "articulation": row.get("articulation", ""),
+                "stringId": string_id,
+                "position": _safe_int(row.get("position")),
+                "finger": _safe_int(row.get("finger")),
             }
     return annotations
 
@@ -158,8 +300,21 @@ def write_annotations(song: Song, annotation_map):
     with path.open("w", newline="", encoding="utf-8") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=ANNOTATION_HEADERS)
         writer.writeheader()
-        for key in sorted(annotation_map.keys(), key=lambda k: (k[0], k[1])):
-            writer.writerow(annotation_map[key])
+        # Sort by start time ascending, then pitch to keep rows stable
+        for key in sorted(annotation_map.keys(), key=lambda k: (k[1], k[0])):
+            record = annotation_map[key]
+            writer.writerow(
+                {
+                    "pitch": record.get("pitch", 0),
+                    "start": record.get("start", 0.0),
+                    "end": record.get("end", 0.0),
+                    "tonalTechnique": record.get("tonalTechnique", ""),
+                    "articulation": record.get("articulation", ""),
+                    "stringId": "" if record.get("stringId") is None else record.get("stringId"),
+                    "position": "" if record.get("position") is None else record.get("position"),
+                    "finger": "" if record.get("finger") is None else record.get("finger"),
+                }
+            )
 
 
 def waveform_points(song: Song, buckets: int = WAVEFORM_BUCKETS):
@@ -211,7 +366,8 @@ def create_app():
     @flask_app.route("/")
     def index():
         songs = discover_songs()
-        return render_template("index.html", songs=songs)
+        song_tree = build_song_tree(songs)
+        return render_template("index.html", songs=songs, song_tree=song_tree)
 
     @flask_app.route("/annotate/<song_name>")
     def annotate(song_name: str):
@@ -234,6 +390,10 @@ def create_app():
             "midiApiUrl": url_for("midi_api", song_name=song.name),
             "waveformApiUrl": url_for("waveform_api", song_name=song.name),
             "annotationApiUrl": url_for("annotation_api", song_name=song.name),
+            "aiGenerateApiUrl": url_for("ai_generate", song_name=song.name),
+            "aiCommitApiUrl": url_for("ai_commit", song_name=song.name),
+            "statusApiUrl": url_for("status_api", song_name=song.name),
+            "completed": bool(song.completed),
             "windowSeconds": DEFAULT_VIEW_SECONDS,
             "palette": palette,
             "slicePaddingSeconds": 0.05,  # 50ms padding for midi note playback buffer
@@ -276,9 +436,13 @@ def create_app():
         for note in notes:
             key = (note["pitch"], note["start"])
             annotation = annotations.get(key) or {}
+            note["noteKey"] = note_key_from_parts(note["pitch"], note["start"])
             note["annotation"] = {
                 "tonalTechnique": annotation.get("tonalTechnique", ""),
                 "articulation": annotation.get("articulation", ""),
+                "stringId": annotation.get("stringId"),
+                "position": annotation.get("position"),
+                "finger": annotation.get("finger"),
             }
         duration = max((note["end"] for note in notes), default=0)
         return jsonify({"notes": notes, "duration": duration})
@@ -298,17 +462,117 @@ def create_app():
 
         tonal = (payload.get("tonalTechnique") or "").strip()
         articulation = (payload.get("articulation") or "").strip()
+        string_id = _safe_int(payload.get("stringId"))
+        position = _safe_int(payload.get("position"))
+        finger = _safe_int(payload.get("finger"))
 
         annotations = read_annotations(song)
-        annotations[(pitch, start)] = {
+        key = (pitch, start)
+        base = annotations.get(key) or empty_annotation(pitch, start, end)
+        updates = {
             "pitch": pitch,
             "start": start,
             "end": end,
             "tonalTechnique": tonal,
             "articulation": articulation,
         }
+        if string_id is not None:
+            updates["stringId"] = string_id
+        if position is not None:
+            updates["position"] = position
+        if finger is not None:
+            updates["finger"] = finger
+
+        annotations[key] = merge_annotation(base, updates)
         write_annotations(song, annotations)
         return jsonify({"status": "ok"})
+
+    @flask_app.route("/api/ai/generate/<song_name>", methods=["POST"])
+    def ai_generate(song_name: str):
+        song = get_song(song_name)
+        if not song:
+            abort(404)
+
+        payload = request.get_json(silent=True) or {}
+        topk = _safe_int(payload.get("topk"), 3) or 3
+        force = bool(payload.get("force"))
+
+        notes = midi_notes(song)
+        try:
+            result = generate_predictions(
+                song.midi_path,
+                song.audio_path,
+                notes,
+                cache_dir=song.midi_path.parent / "ai_cache",
+                topk=topk,
+                force=force,
+            )
+        except Exception as exc:  # pragma: no cover
+            abort(500, description=f"Inference failed: {exc}")
+
+        annotations = read_annotations(song)
+        changed_count = 0
+        predictions = []
+        for pred in result["predictions"]:
+            key = (pred["pitch"], float(pred["start"]))
+            existing = annotations.get(key)
+            existing_triplet = (
+                existing.get("stringId"),
+                existing.get("position"),
+                existing.get("finger"),
+            ) if existing else (None, None, None)
+            proposed = (pred["stringId"], pred["position"], pred["finger"])
+            changed = existing_triplet != proposed
+            if changed:
+                changed_count += 1
+            pred["changed"] = changed
+            predictions.append(pred)
+
+        return jsonify(
+            {
+                "predictions": predictions,
+                "noteCount": len(notes),
+                "changedCount": changed_count,
+            }
+        )
+
+    @flask_app.route("/api/ai/commit/<song_name>", methods=["POST"])
+    def ai_commit(song_name: str):
+        song = get_song(song_name)
+        if not song:
+            abort(404)
+
+        payload = request.get_json(silent=True) or {}
+        predictions = payload.get("predictions") or []
+        if not isinstance(predictions, list):
+            abort(400, description="predictions must be a list")
+
+        annotations = read_annotations(song)
+        updated = 0
+
+        for pred in predictions:
+            try:
+                pitch = int(pred["pitch"])
+                start = float(pred["start"])
+                end = _safe_float(pred.get("end"), 0.0)
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            key = (pitch, start)
+            base = annotations.get(key) or empty_annotation(pitch, start, end)
+            updates = {
+                "pitch": pitch,
+                "start": start,
+                "end": end if end else base.get("end", 0.0),
+                "stringId": _safe_int(pred.get("stringId")),
+                "position": _safe_int(pred.get("position")),
+                "finger": _safe_int(pred.get("finger")),
+            }
+            annotations[key] = merge_annotation(base, updates)
+            updated += 1
+
+        write_annotations(song, annotations)
+        return jsonify({"status": "ok", "updated": updated})
 
     @flask_app.route("/api/waveform/<song_name>")
     def waveform_api(song_name: str):
@@ -317,6 +581,21 @@ def create_app():
             abort(404)
         data = waveform_points(song)
         return jsonify(data)
+
+    @flask_app.route("/api/status/<song_name>", methods=["GET", "POST"])
+    def status_api(song_name: str):
+        song = get_song(song_name)
+        if not song:
+            abort(404)
+
+        folder = song.midi_path.parent
+        if request.method == "GET":
+            return jsonify({"completed": bool(read_completed_status(folder))})
+
+        payload = request.get_json(silent=True) or {}
+        completed = bool(payload.get("completed"))
+        write_completed_status(folder, completed)
+        return jsonify({"status": "ok", "completed": completed})
 
     return flask_app
 

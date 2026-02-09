@@ -9,4 +9,3 @@ PORT=${1:-5001}
 
 echo "Starting Flask on port ${PORT}..."
 flask run --host=0.0.0.0 --port="${PORT}"
-

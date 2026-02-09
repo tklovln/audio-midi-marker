@@ -33,7 +33,16 @@
             <p class="eyebrow">Annotating</p>
             <h1>{{ song.title }}</h1>
         </div>
-        
+        <div class="header-actions">
+            <button
+                id="completion-toggle"
+                class="pill pill--toggle {% if song.completed %}pill--done{% else %}pill--todo{% endif %}"
+                type="button"
+                aria-pressed="{% if song.completed %}true{% else %}false{% endif %}"
+            >
+                {% if song.completed %}Done{% else %}Not done{% endif %}
+            </button>
+        </div>
     </header>
 
     <main id="annotation-app" class="annotation-app">
@@ -151,14 +160,53 @@
                     </div>
                     <span class="pie-selected text-sm text-slate-500" id="pie-articulation-label">None</span>
                 </div>
+                <div class="pie-control flex flex-col items-center gap-4">
+                    <p class="text-sm uppercase tracking-wide text-slate-500">String</p>
+                    <div class="pie-chart-wrapper">
+                        <canvas id="pie-string"></canvas>
+                    </div>
+                    <span class="pie-selected text-sm text-slate-500" id="pie-string-label">None</span>
+                </div>
+                <div class="pie-control flex flex-col items-center gap-4">
+                    <p class="text-sm uppercase tracking-wide text-slate-500">Position</p>
+                    <div class="pie-chart-wrapper">
+                        <canvas id="pie-position"></canvas>
+                    </div>
+                    <span class="pie-selected text-sm text-slate-500" id="pie-position-label">None</span>
+                </div>
+                <div class="pie-control flex flex-col items-center gap-4">
+                    <p class="text-sm uppercase tracking-wide text-slate-500">Finger</p>
+                    <div class="pie-chart-wrapper">
+                        <canvas id="pie-finger"></canvas>
+                    </div>
+                    <span class="pie-selected text-sm text-slate-500" id="pie-finger-label">None</span>
+                </div>
             </div>
             <div class="annotation-actions">
+                <button id="ai-generate" class="secondary-button" type="button">
+                    AI generate
+                </button>
                 <span id="annotation-status" class="annotation-status" role="status" aria-live="polite">
                     Select a note to annotate. Changes save automatically.
                 </span>
             </div>
         </section>
     </main>
+
+    <div id="ai-modal" class="ai-modal hidden" aria-hidden="true">
+        <div class="ai-modal__backdrop"></div>
+        <div class="ai-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="ai-modal-title">
+            <div class="ai-modal__header">
+                <h3 id="ai-modal-title">Apply AI fingering</h3>
+                <p id="ai-modal-summary" class="ai-modal__summary text-sm text-slate-600"></p>
+            </div>
+            <div id="ai-modal-diff" class="ai-modal__diff"></div>
+            <div class="ai-modal__actions">
+                <button id="ai-modal-cancel" class="ghost-button" type="button">Discard</button>
+                <button id="ai-modal-commit" class="primary-button" type="button">Commit to CSV</button>
+            </div>
+        </div>
+    </div>
 
     <script id="app-config" type="application/json">
         {{ app_config | tojson | safe }}

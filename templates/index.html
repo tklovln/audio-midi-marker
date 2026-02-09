@@ -18,15 +18,42 @@
     </header>
 
     <main class="content">
-        {% if songs %}
-        <section class="song-grid">
-            {% for song in songs %}
-            <a class="song-card" href="{{ url_for('annotate', song_name=song.name) }}">
-                <div class="song-card__tag">Ready</div>
-                <h2>{{ song.title }}</h2>
-                <p>{{ song.name }}</p>
-                <span class="pill">Annotate</span>
-            </a>
+        {% if song_tree %}
+        <section class="song-tree" aria-label="Pieces by composer">
+            {% for composer_group in song_tree %}
+            <details class="tree tree--composer">
+                <summary class="tree__summary">
+                    <span class="tree__title">{{ composer_group.composer }}</span>
+                    <span class="tree__meta">{{ composer_group.songs | length }} piece{% if composer_group.songs | length != 1 %}s{% endif %}</span>
+                </summary>
+
+                <div class="tree__children">
+                    {% for piece in composer_group.songs %}
+                    <details class="tree tree--piece">
+                        <summary class="tree__summary">
+                            <span class="tree__title">{{ piece.title }}</span>
+                            <span class="tree__meta">{{ piece.performers | length }} performer{% if piece.performers | length != 1 %}s{% endif %}</span>
+                        </summary>
+
+                        <div class="tree__children tree__children--performers">
+                            {% for perf in piece.performers %}
+                            <a class="tree__leaf" href="{{ url_for('annotate', song_name=perf.name) }}">
+                                <div class="tree__leaf-row">
+                                    <span class="tree__leaf-title">{{ perf.performer or "Unknown performer" }}</span>
+                                    {% if perf.completed %}
+                                    <span class="pill pill--small pill--done">Done</span>
+                                    {% else %}
+                                    <span class="pill pill--small pill--todo">Not done</span>
+                                    {% endif %}
+                                </div>
+                                <div class="tree__leaf-sub">{{ perf.name }}</div>
+                            </a>
+                            {% endfor %}
+                        </div>
+                    </details>
+                    {% endfor %}
+                </div>
+            </details>
             {% endfor %}
         </section>
         {% else %}

@@ -36,7 +36,21 @@ class AnnotationApp {
             videoPlayer: document.getElementById("video-player"),
             videoOverlay: document.getElementById("video-overlay"),
             trackingCanvas: document.getElementById("tracking-canvas"),
+            aiGenerateButton: document.getElementById("ai-generate"),
+            aiModal: document.getElementById("ai-modal"),
+            aiModalSummary: document.getElementById("ai-modal-summary"),
+            aiModalDiff: document.getElementById("ai-modal-diff"),
+            aiModalCancel: document.getElementById("ai-modal-cancel"),
+            aiModalCommit: document.getElementById("ai-modal-commit"),
+            stringPie: document.getElementById("pie-string"),
+            positionPie: document.getElementById("pie-position"),
+            fingerPie: document.getElementById("pie-finger"),
+            stringPieLabel: document.getElementById("pie-string-label"),
+            positionPieLabel: document.getElementById("pie-position-label"),
+            fingerPieLabel: document.getElementById("pie-finger-label"),
+            completionToggle: document.getElementById("completion-toggle"),
         };
+        this.completed = !!config.completed;
         this.waveformData = null;
         this.hands = null;
         this.handsReady = false;
@@ -51,8 +65,13 @@ class AnnotationApp {
         this.isSavingAnnotation = false;
         this.statusTimer = null;
         this.annotationSaveTimer = null;
+        this.pendingAnnotationSave = null;
+        this.annotationSaveQueue = [];
         this.suspendAutosave = false;
         this.pieCharts = {};
+        this.aiSuggestions = new Map();
+        this.aiPending = false;
+        this.aiChangedCount = 0;
         this.tonalOptions = [
             { value: "", label: "none", abbrev: "Non" },
             { value: "pizzicato", label: "pizzicato", abbrev: "PIZ" },
@@ -63,11 +82,43 @@ class AnnotationApp {
         ];
         this.articulationOptions = [
             { value: "", label: "none", abbrev: "NON" },
+            { value: "release", label: "release", abbrev: "REL" },
             { value: "staccato", label: "staccato", abbrev: "STC" },
-            { value: "accent", label: "accent", abbrev: "ACC" },
+            { value: "spiccato", label: "spiccato", abbrev: "SPC" },
+            // { value: "accent", label: "accent", abbrev: "ACC" },
             // { value: "legato", label: "legato", abbrev: "LEG" },
             // { value: "tenuto", label: "tenuto", abbrev: "TEN" },
             // { value: "marcato", label: "marcato", abbrev: "MAR" },
+        ];
+        this.stringOptions = [
+            { value: "", label: "none", abbrev: "–" },
+            { value: 0, label: "G string", abbrev: "G" },
+            { value: 1, label: "D string", abbrev: "D" },
+            { value: 2, label: "A string", abbrev: "A" },
+            { value: 3, label: "E string", abbrev: "E" },
+        ];
+        this.positionOptions = [
+            { value: "", label: "none", abbrev: "–" },
+            { value: 1, label: "1st pos", abbrev: "1" },
+            { value: 2, label: "2nd pos", abbrev: "2" },
+            { value: 3, label: "3rd pos", abbrev: "3" },
+            { value: 4, label: "4th pos", abbrev: "4" },
+            { value: 5, label: "5th pos", abbrev: "5" },
+            { value: 6, label: "6th pos", abbrev: "6" },
+            { value: 7, label: "7th pos", abbrev: "7" },
+            { value: 8, label: "8th pos", abbrev: "8" },
+            { value: 9, label: "9th pos", abbrev: "9" },
+            { value: 10, label: "10th pos", abbrev: "10" },
+            { value: 11, label: "11th pos", abbrev: "11" },
+            { value: 12, label: "12th pos", abbrev: "12" },
+        ];
+        this.fingerOptions = [
+            { value: "", label: "none", abbrev: "–" },
+            { value: 0, label: "Open", abbrev: "0" },
+            { value: 1, label: "1st finger", abbrev: "1" },
+            { value: 2, label: "2nd finger", abbrev: "2" },
+            { value: 3, label: "3rd finger", abbrev: "3" },
+            { value: 4, label: "4th finger", abbrev: "4" },
         ];
         this.pieCharts = {};
 
@@ -81,15 +132,74 @@ class AnnotationApp {
     }
 
     async init() {
+        // Status should appear immediately; don't wait on MIDI/waveform fetch.
+        this.setupCompletionToggle();
         await this.loadMidi();
         await this.loadWaveform();
         this.updateSliderBounds();
         this.setupVideo();
         this.setupWaveform();
         this.setupControls();
+        this.setupAiControls();
         this.renderNoteButtons();
         this.renderMidi();
         this.renderWaveform();
+    }
+
+    setupCompletionToggle() {
+        const button = this.dom.completionToggle;
+        if (!button) return;
+        if (!this.config.statusApiUrl) {
+            button.disabled = true;
+            button.title = "Status endpoint unavailable";
+            return;
+        }
+
+        const applyUi = (completed) => {
+            this.completed = !!completed;
+            button.textContent = this.completed ? "Done" : "Not done";
+            button.classList.toggle("pill--done", this.completed);
+            button.classList.toggle("pill--todo", !this.completed);
+            button.setAttribute("aria-pressed", this.completed ? "true" : "false");
+        };
+
+        // initial state from server (source of truth)
+        fetch(this.config.statusApiUrl)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+                if (data && typeof data.completed !== "undefined") {
+                    applyUi(!!data.completed);
+                } else {
+                    applyUi(this.completed);
+                }
+            })
+            .catch(() => applyUi(this.completed));
+
+        button.addEventListener("click", async () => {
+            const next = !this.completed;
+            button.disabled = true;
+            try {
+                const resp = await fetch(this.config.statusApiUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ completed: next }),
+                });
+                if (!resp.ok) {
+                    throw new Error(`Status update failed (${resp.status})`);
+                }
+                const data = await resp.json();
+                applyUi(!!data.completed);
+                this.setAnnotationStatus(this.completed ? "Marked as: Done" : "Marked as: Not done", false);
+            } catch (e) {
+                console.error(e);
+                this.setAnnotationStatus("Failed to update completion status (please retry).", true);
+            } finally {
+                button.disabled = false;
+            }
+        });
+
+        // apply config value immediately while fetch resolves
+        applyUi(this.completed);
     }
 
     async loadMidi() {
@@ -97,13 +207,22 @@ class AnnotationApp {
             const response = await fetch(this.config.midiApiUrl);
             const payload = await response.json();
             const rawNotes = payload.notes || [];
-            this.notes = rawNotes.map((note) => ({
-                ...note,
-                annotation: {
-                    tonalTechnique: note.annotation?.tonalTechnique || "",
-                    articulation: note.annotation?.articulation || "",
-                },
-            }));
+            this.notes = rawNotes.map((note) => {
+                const noteKey = note.noteKey || this.makeNoteKey(note);
+                return {
+                    ...note,
+                    noteKey,
+                    annotation: {
+                        tonalTechnique: note.annotation?.tonalTechnique || "",
+                        articulation: note.annotation?.articulation || "",
+                        stringId: note.annotation?.stringId ?? null,
+                        position: note.annotation?.position ?? null,
+                        finger: note.annotation?.finger ?? null,
+                    },
+                    aiSuggestion: null,
+                    aiChanged: false,
+                };
+            });
             this.duration = payload.duration || 0;
             if (this.notes.length) {
                 const pitches = this.notes.map((n) => n.pitch);
@@ -391,7 +510,7 @@ class AnnotationApp {
         if (this.dom.prevButton) {
             this.dom.prevButton.addEventListener("click", () => {
                 this.flashButton(this.dom.prevButton);
-                this.playNeighborNote("prev");
+                this.playNeighborNote("prev", { steps: 2 });
             });
         }
 
@@ -413,22 +532,6 @@ class AnnotationApp {
             if (!isSpace && event.code !== "ArrowRight" && event.code !== "ArrowLeft") {
                 return;
             }
-            if (event.code === "ArrowRight") {
-                event.preventDefault();
-                this.flashButton(this.dom.nextButton);
-                this.playNeighborNote("next");
-                return;
-            }
-
-            if (event.code === "ArrowLeft") {
-                event.preventDefault();
-                this.flashButton(this.dom.prevButton);
-                this.playNeighborNote("prev");
-                return;
-            }
-
-            if (!isSpace) return;
-
             const activeTag =
                 document.activeElement?.tagName?.toLowerCase() || "";
             const isTyping =
@@ -437,6 +540,32 @@ class AnnotationApp {
                 document.activeElement?.isContentEditable;
 
             if (isTyping) return;
+
+            if (event.code === "ArrowRight") {
+                event.preventDefault();
+                // Keep keyboard behavior identical to the Next button (play + move cursor)
+                if (this.dom.nextButton) {
+                    this.dom.nextButton.click();
+                } else {
+                    this.flashButton(this.dom.nextButton);
+                    this.playNeighborNote("next");
+                }
+                return;
+            }
+
+            if (event.code === "ArrowLeft") {
+                event.preventDefault();
+                // Keep keyboard behavior identical to the Prev button (play + move cursor)
+                if (this.dom.prevButton) {
+                    this.dom.prevButton.click();
+                } else {
+                    this.flashButton(this.dom.prevButton);
+                    this.playNeighborNote("prev");
+                }
+                return;
+            }
+
+            if (!isSpace) return;
 
             event.preventDefault();
             this.flashButton(this.dom.playButton);
@@ -454,6 +583,32 @@ class AnnotationApp {
         document.addEventListener("keydown", this.handleKeydown);
 
         this.setupScrubbing();
+    }
+
+    setupAiControls() {
+        if (this.dom.aiGenerateButton) {
+            this.dom.aiGenerateButton.addEventListener("click", () => this.handleAiGenerate());
+            if (!this.config.aiGenerateApiUrl) {
+                this.dom.aiGenerateButton.disabled = true;
+                this.dom.aiGenerateButton.title = "AI endpoint unavailable";
+            }
+        }
+        if (this.dom.aiModalCancel) {
+            this.dom.aiModalCancel.addEventListener("click", () => this.discardAiSuggestions());
+        }
+        if (this.dom.aiModalCommit) {
+            this.dom.aiModalCommit.addEventListener("click", () => this.commitAiSuggestions());
+        }
+        if (this.dom.aiModal) {
+            this.dom.aiModal.addEventListener("click", (event) => {
+                if (
+                    event.target === this.dom.aiModal ||
+                    event.target.classList.contains("ai-modal__backdrop")
+                ) {
+                    this.discardAiSuggestions();
+                }
+            });
+        }
     }
 
     setupScrubbing() {
@@ -502,6 +657,187 @@ class AnnotationApp {
         });
     }
 
+    async handleAiGenerate() {
+        if (!this.config.aiGenerateApiUrl || this.aiPending) {
+            return;
+        }
+        this.aiPending = true;
+        this.setAnnotationStatus("Running AI fingering…", false);
+        this.closeAiModal();
+        this.clearAiSuggestions(true);
+        try {
+            const response = await fetch(this.config.aiGenerateApiUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ topk: 3 }),
+            });
+            if (!response.ok) {
+                throw new Error(`AI request failed (${response.status})`);
+            }
+            const payload = await response.json();
+            this.applyAiPredictions(payload);
+            this.openAiModal();
+            this.setAnnotationStatus("AI suggestions ready. Review before committing.", false);
+        } catch (error) {
+            console.error("AI generate failed", error);
+            this.setAnnotationStatus("AI generate failed. See console for details.", true);
+        } finally {
+            this.aiPending = false;
+        }
+    }
+
+    applyAiPredictions(payload) {
+        this.aiSuggestions.clear();
+        const predictions = payload?.predictions || [];
+        predictions.forEach((pred) => {
+            const key = pred.noteKey || this.makeNoteKey(pred);
+            this.aiSuggestions.set(key, pred);
+        });
+
+        let changed = 0;
+        this.notes.forEach((note) => {
+            const key = this.makeNoteKey(note);
+            const suggestion = this.aiSuggestions.get(key) || null;
+            note.aiSuggestion = suggestion;
+            if (suggestion) {
+                const annotation = note.annotation || {};
+                const isDifferent =
+                    suggestion.stringId !== annotation.stringId ||
+                    suggestion.position !== annotation.position ||
+                    suggestion.finger !== annotation.finger;
+                note.aiChanged = isDifferent;
+                if (isDifferent) changed += 1;
+            } else {
+                note.aiChanged = false;
+            }
+        });
+        this.aiChangedCount = changed;
+        this.renderMidi();
+        this.renderNoteButtons();
+        this.updateAiModalDiff();
+    }
+
+    updateAiModalDiff() {
+        if (this.dom.aiModalSummary) {
+            const total = this.aiSuggestions.size;
+            this.dom.aiModalSummary.textContent = total
+                ? `${this.aiChangedCount} of ${total} notes differ from current annotations.`
+                : "No AI suggestions available.";
+        }
+        if (!this.dom.aiModalDiff) return;
+        this.dom.aiModalDiff.innerHTML = "";
+        if (!this.aiSuggestions.size) {
+            this.dom.aiModalDiff.textContent = "No suggestions to review.";
+            return;
+        }
+        const fragment = document.createDocumentFragment();
+        let shown = 0;
+        this.notes.forEach((note) => {
+            if (!note.aiSuggestion || shown >= 12) return;
+            const suggestion = note.aiSuggestion;
+            const annotation = note.annotation || {};
+            const oldLabel = this.formatFingering(annotation);
+            const newLabel = this.formatFingering(suggestion);
+            const line = document.createElement("p");
+            const pitchLabel = this.getPitchLabel(note.pitch);
+            line.textContent = `${pitchLabel} @ ${note.start.toFixed(2)}s → ${note.end.toFixed(2)}s · ${oldLabel} → ${newLabel}${note.aiChanged ? " *" : ""}`;
+            fragment.appendChild(line);
+            shown += 1;
+        });
+        if (this.aiSuggestions.size > shown) {
+            const more = document.createElement("p");
+            more.textContent = `…and ${this.aiSuggestions.size - shown} more`;
+            fragment.appendChild(more);
+        }
+        this.dom.aiModalDiff.appendChild(fragment);
+    }
+
+    openAiModal() {
+        this.updateAiModalDiff();
+        if (this.dom.aiModal) {
+            this.dom.aiModal.classList.remove("hidden");
+            this.dom.aiModal.setAttribute("aria-hidden", "false");
+        }
+    }
+
+    closeAiModal() {
+        if (this.dom.aiModal) {
+            this.dom.aiModal.classList.add("hidden");
+            this.dom.aiModal.setAttribute("aria-hidden", "true");
+        }
+    }
+
+    clearAiSuggestions(resetNotes = false) {
+        this.aiSuggestions.clear();
+        this.aiChangedCount = 0;
+        if (resetNotes) {
+            this.notes.forEach((note) => {
+                note.aiSuggestion = null;
+                note.aiChanged = false;
+            });
+            this.renderMidi();
+        }
+    }
+
+    discardAiSuggestions() {
+        if (this.aiSuggestions.size) {
+            this.setAnnotationStatus("AI suggestions discarded.", false);
+        }
+        this.clearAiSuggestions(true);
+        this.closeAiModal();
+    }
+
+    async commitAiSuggestions() {
+        if (!this.config.aiCommitApiUrl || !this.aiSuggestions.size || this.aiPending) {
+            this.closeAiModal();
+            return;
+        }
+        this.aiPending = true;
+        this.setAnnotationStatus("Committing AI predictions…", false);
+        const predictions = this.notes
+            .filter((note) => !!note.aiSuggestion)
+            .map((note) => ({
+                pitch: note.pitch,
+                start: note.start,
+                end: note.end,
+                stringId: note.aiSuggestion.stringId,
+                position: note.aiSuggestion.position,
+                finger: note.aiSuggestion.finger,
+            }));
+        try {
+            const response = await fetch(this.config.aiCommitApiUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ predictions }),
+            });
+            if (!response.ok) {
+                throw new Error(`Commit failed (${response.status})`);
+            }
+            this.notes.forEach((note) => {
+                if (note.aiSuggestion) {
+                    note.annotation = {
+                        ...(note.annotation || {}),
+                        stringId: note.aiSuggestion.stringId,
+                        position: note.aiSuggestion.position,
+                        finger: note.aiSuggestion.finger,
+                    };
+                    note.aiChanged = false;
+                    note.aiSuggestion = null;
+                }
+            });
+            this.setAnnotationStatus("AI fingering committed to annotation.csv.", false);
+            this.renderMidi();
+            this.renderNoteButtons();
+        } catch (error) {
+            console.error("AI commit failed", error);
+            this.setAnnotationStatus("AI commit failed. See console for details.", true);
+        } finally {
+            this.closeAiModal();
+            this.aiPending = false;
+            this.clearAiSuggestions(false);
+        }
+    }
+
     renderMidi() {
         const { midiGrid } = this.dom;
         midiGrid.innerHTML = "";
@@ -522,13 +858,23 @@ class AnnotationApp {
 
             const button = document.createElement("button");
             button.className = "midi-note";
+            button.dataset.noteKey = note.noteKey || this.makeNoteKey(note);
             button.style.left = `${left}%`;
             button.style.width = `${width}%`;
             button.style.top = `calc(${top}% - 14px)`;
             button.style.height = "28px";
+            this.applyArticulationColorToMidiButton(button, note.annotation?.articulation || "");
             const pitchLabel = this.getPitchLabel(note.pitch);
             button.textContent = pitchLabel;
             button.title = `Pitch ${pitchLabel} (${note.start.toFixed(2)}s → ${note.end.toFixed(2)}s)`;
+            if (note.aiSuggestion) {
+                button.classList.add("ai-suggested");
+                const suggestedLabel = this.formatFingering(note.aiSuggestion);
+                button.title += ` · AI ${suggestedLabel}`;
+            }
+            if (note.aiChanged) {
+                button.classList.add("ai-changed");
+            }
 
             button.addEventListener("mouseenter", () => this.updateNoteReadout(note));
             button.addEventListener("focus", () => this.updateNoteReadout(note));
@@ -632,6 +978,9 @@ class AnnotationApp {
             this.dom.articulationPieLabel,
             this.articulationOptions
         );
+        this.createPieChart("string", this.dom.stringPie, this.dom.stringPieLabel, this.stringOptions);
+        this.createPieChart("position", this.dom.positionPie, this.dom.positionPieLabel, this.positionOptions);
+        this.createPieChart("finger", this.dom.fingerPie, this.dom.fingerPieLabel, this.fingerOptions);
     }
 
     createPieChart(type, canvas, labelEl, optionList) {
@@ -675,7 +1024,8 @@ class AnnotationApp {
                     const value = optionList[index].value;
                     this.setPieSelection(type, value);
                     if (!this.suspendAutosave) {
-                        this.queueAnnotationSave();
+                        // Save immediately on click to avoid losing changes when switching notes quickly
+                        this.queueAnnotationSave({ immediate: true });
                     }
                 },
                 layout: {
@@ -749,11 +1099,77 @@ class AnnotationApp {
             const updated = { ...this.selectedNote.annotation };
             if (type === "tonal") {
                 updated.tonalTechnique = value || "";
-            } else {
+            } else if (type === "articulation") {
                 updated.articulation = value || "";
+            } else if (type === "string") {
+                updated.stringId = value === "" ? null : value;
+            } else if (type === "position") {
+                updated.position = value === "" ? null : value;
+            } else if (type === "finger") {
+                updated.finger = value === "" ? null : value;
             }
             this.selectedNote.annotation = updated;
+
+            // Keep MIDI piano roll colors in sync with articulation edits.
+            if (type === "articulation") {
+                this.updateMidiNoteArticulationColor(this.selectedNote);
+            }
         }
+    }
+
+    getOptionColor(optionList, value) {
+        if (!Array.isArray(optionList) || !optionList.length) return null;
+        const idx = optionList.findIndex((opt) => opt.value === value);
+        const safeIdx = idx === -1 ? 0 : idx;
+        return this.pieColors[safeIdx % this.pieColors.length] || null;
+    }
+
+    getTextColorForHexBackground(hex) {
+        if (typeof hex !== "string") return null;
+        const normalized = hex.trim().replace("#", "");
+        if (normalized.length !== 6) return null;
+        const r = parseInt(normalized.slice(0, 2), 16);
+        const g = parseInt(normalized.slice(2, 4), 16);
+        const b = parseInt(normalized.slice(4, 6), 16);
+        if (![r, g, b].every((v) => Number.isFinite(v))) return null;
+
+        // Relative luminance (sRGB)
+        const toLinear = (c) => {
+            const s = c / 255;
+            return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+        };
+        const L = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+
+        // Use dark text on light backgrounds, white on dark backgrounds.
+        return L > 0.55 ? "#1f1630" : "#ffffff";
+    }
+
+    applyArticulationColorToMidiButton(button, articulationValue) {
+        if (!button) return;
+        // Keep "none" (empty string) mapped to the first articulation option color
+        // so the MIDI roll matches the pie chart color mapping.
+        const normalized = articulationValue || "";
+        const color = this.getOptionColor(this.articulationOptions, normalized);
+        if (!color) {
+            button.style.removeProperty("--articulation-color");
+            button.style.removeProperty("color");
+            return;
+        }
+        button.style.setProperty("--articulation-color", color);
+        const textColor = this.getTextColorForHexBackground(color);
+        if (textColor) {
+            button.style.color = textColor;
+        } else {
+            button.style.removeProperty("color");
+        }
+    }
+
+    updateMidiNoteArticulationColor(note) {
+        if (!note || !this.dom.midiGrid) return;
+        const key = note.noteKey || this.makeNoteKey(note);
+        const button = this.dom.midiGrid.querySelector(`[data-note-key="${CSS.escape(key)}"]`);
+        if (!button) return;
+        this.applyArticulationColorToMidiButton(button, note.annotation?.articulation || "");
     }
 
     getPieSelection(type) {
@@ -783,22 +1199,94 @@ class AnnotationApp {
     updateNoteReadout(note) {
         if (!this.dom.noteReadout) return;
         const label = this.getPitchLabel(note.pitch);
-        this.dom.noteReadout.textContent = `Pitch ${label} · ${note.start.toFixed(2)}s → ${note.end.toFixed(2)}s`;
+        const fingering = this.formatFingering(note.annotation);
+        this.dom.noteReadout.textContent = `Pitch ${label} · ${note.start.toFixed(2)}s → ${note.end.toFixed(2)}s · ${fingering}`;
     }
 
-    playNeighborNote(direction) {
-        if (!this.notes.length) return;
+    findNeighborNote(direction) {
+        if (!this.notes.length) return null;
+        const step = direction === "next" ? 1 : -1;
+
+        // Prefer navigating relative to the currently selected note.
+        if (this.selectedNote) {
+            const selectedKey = this.selectedNote.noteKey || this.makeNoteKey(this.selectedNote);
+            const idx = this.notes.findIndex((n) => (n.noteKey || this.makeNoteKey(n)) === selectedKey);
+            if (idx !== -1) {
+                const nextIdx = Math.min(Math.max(idx + step, 0), this.notes.length - 1);
+                return this.notes[nextIdx];
+            }
+        }
+
+        // Fallback: navigate relative to the current cursor time.
         const epsilon = 0.0005;
         const time = this.currentTime;
-        let target = null;
 
         if (direction === "next") {
-            target = this.notes.find((note) => note.start > time + epsilon) ?? null;
+            return (
+                this.notes.find((note) => note.start > time + epsilon) ??
+                this.notes[this.notes.length - 1]
+            );
+        }
+
+        for (let i = this.notes.length - 1; i >= 0; i -= 1) {
+            if (this.notes[i].start < time - epsilon) return this.notes[i];
+        }
+        return this.notes[0];
+    }
+
+    jumpNeighborNote(direction) {
+        const target = this.findNeighborNote(direction);
+        if (!target) return;
+
+        this.focusNote(target);
+        this.centerViewOn(target.start, { silentSlider: false });
+
+        // Move the cursor/time without auto-playing.
+        if (this.waveReady) {
+            this.seekTo(target.start);
         } else {
-            for (let i = this.notes.length - 1; i >= 0; i -= 1) {
-                if (this.notes[i].start < time - epsilon) {
-                    target = this.notes[i];
-                    break;
+            this.currentTime = target.start;
+            this.updateCursor(target.start);
+        }
+    }
+
+    playNeighborNote(direction, { steps = 1 } = {}) {
+        if (!this.notes.length) return;
+        const epsilon = 0.0005;
+        const safeSteps = Number.isFinite(steps) && steps > 0 ? Math.floor(steps) : 1;
+        let target = null;
+
+        // Prefer navigating relative to the currently selected note (stable even if currentTime is offset by slice padding).
+        if (this.selectedNote) {
+            const selectedKey = this.selectedNote.noteKey || this.makeNoteKey(this.selectedNote);
+            const idx = this.notes.findIndex((n) => (n.noteKey || this.makeNoteKey(n)) === selectedKey);
+            if (idx !== -1) {
+                const delta = direction === "next" ? safeSteps : -safeSteps;
+                const nextIdx = Math.min(Math.max(idx + delta, 0), this.notes.length - 1);
+                target = this.notes[nextIdx] ?? null;
+            }
+        }
+
+        const time = this.currentTime;
+        if (direction === "next") {
+            if (!target) {
+                const startIndex = this.notes.findIndex((note) => note.start > time + epsilon);
+                if (startIndex !== -1) {
+                    const index = Math.min(startIndex + (safeSteps - 1), this.notes.length - 1);
+                    target = this.notes[index] ?? null;
+                }
+            }
+        } else {
+            if (!target) {
+                let remaining = safeSteps;
+                for (let i = this.notes.length - 1; i >= 0; i -= 1) {
+                    if (this.notes[i].start < time - epsilon) {
+                        remaining -= 1;
+                        if (remaining <= 0) {
+                            target = this.notes[i];
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -832,8 +1320,31 @@ class AnnotationApp {
         return names[midiNote % 12] || "c";
     }
 
+    makeNoteKey(note) {
+        const pitch = typeof note.pitch === "number" ? note.pitch : 0;
+        const start = typeof note.start === "number" ? note.start : 0;
+        return `${pitch}@${start.toFixed(6)}`;
+    }
+
+    formatFingering(fields) {
+        if (!fields) return "–";
+        const { stringId, position, finger } = fields;
+        if (
+            stringId === null || stringId === undefined ||
+            position === null || position === undefined ||
+            finger === null || finger === undefined
+        ) {
+            return "–";
+        }
+        const stringNames = ["G", "D", "A", "E"];
+        const stringLabel = stringNames[stringId] || "?";
+        return `${stringLabel}-${position}-f${finger}`;
+    }
+
     focusNote(note) {
         if (!note) return;
+        // Ensure pending autosave for the previous note is flushed before switching selection.
+        this.flushPendingAnnotationSave();
         this.selectedNote = note;
         const label = `${this.getPitchLabel(note.pitch)} · ${note.start.toFixed(2)}s`;
         if (this.dom.annotationNoteLabel) {
@@ -841,64 +1352,145 @@ class AnnotationApp {
         }
         const tonal = note.annotation?.tonalTechnique || "";
         const articulation = note.annotation?.articulation || "";
+        const stringId = note.annotation?.stringId ?? "";
+        const position = note.annotation?.position ?? "";
+        const finger = note.annotation?.finger ?? "";
         this.suspendAutosave = true;
         this.setPieSelection("tonal", tonal, { skipNoteUpdate: true });
         this.setPieSelection("articulation", articulation, { skipNoteUpdate: true });
+        this.setPieSelection("string", stringId, { skipNoteUpdate: true });
+        this.setPieSelection("position", position, { skipNoteUpdate: true });
+        this.setPieSelection("finger", finger, { skipNoteUpdate: true });
         this.suspendAutosave = false;
         this.setAnnotationStatus("Editing note…", false);
     }
 
-    queueAnnotationSave() {
-        if (!this.selectedNote || this.isSavingAnnotation || this.suspendAutosave) {
-            return;
+    makePayloadKey(payload) {
+        const pitch = typeof payload?.pitch === "number" ? payload.pitch : 0;
+        const start = typeof payload?.start === "number" ? payload.start : 0;
+        return `${pitch}@${start.toFixed(6)}`;
+    }
+
+    buildAnnotationPayload(note) {
+        if (!note) return null;
+        const annotation = note.annotation || {};
+        return {
+            pitch: note.pitch,
+            start: note.start,
+            end: note.end,
+            tonalTechnique: annotation.tonalTechnique || "",
+            articulation: annotation.articulation || "",
+            stringId: annotation.stringId ?? null,
+            position: annotation.position ?? null,
+            finger: annotation.finger ?? null,
+        };
+    }
+
+    enqueueAnnotationSave(payload, { auto = true } = {}) {
+        if (!payload) return;
+        const key = this.makePayloadKey(payload);
+
+        // De-dupe: keep only the latest payload per note.
+        const existingIndex = this.annotationSaveQueue.findIndex((item) => item.key === key);
+        const item = { key, payload, auto };
+        if (existingIndex !== -1) {
+            this.annotationSaveQueue[existingIndex] = item;
+        } else {
+            this.annotationSaveQueue.push(item);
         }
+
+        this.processAnnotationSaveQueue();
+    }
+
+    processAnnotationSaveQueue() {
+        if (this.isSavingAnnotation) return;
+        if (!this.config.annotationApiUrl) return;
+        const next = this.annotationSaveQueue.shift();
+        if (!next) return;
+
+        this.isSavingAnnotation = true;
+        this.setAnnotationStatus(next.auto ? "Saving…" : "Saving annotation…", false);
+
+        fetch(this.config.annotationApiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(next.payload),
+        })
+            .then((response) => {
+                if (!response.ok) {
+                    throw new Error(`Save failed (${response.status})`);
+                }
+                // Keep local state consistent: update the matching note object (and selected note if it matches).
+                const key = next.key;
+                const match = this.notes.find((n) => (n.noteKey || this.makeNoteKey(n)) === key);
+                if (match) {
+                    match.annotation = {
+                        tonalTechnique: next.payload.tonalTechnique || "",
+                        articulation: next.payload.articulation || "",
+                        stringId: next.payload.stringId ?? null,
+                        position: next.payload.position ?? null,
+                        finger: next.payload.finger ?? null,
+                    };
+                }
+                if (this.selectedNote && (this.selectedNote.noteKey || this.makeNoteKey(this.selectedNote)) === key) {
+                    this.selectedNote.annotation = {
+                        tonalTechnique: next.payload.tonalTechnique || "",
+                        articulation: next.payload.articulation || "",
+                        stringId: next.payload.stringId ?? null,
+                        position: next.payload.position ?? null,
+                        finger: next.payload.finger ?? null,
+                    };
+                }
+                this.setAnnotationStatus(next.auto ? "Changes autosaved." : "Annotation saved.", false);
+            })
+            .catch((error) => {
+                console.error("Failed to save annotation", error);
+                this.setAnnotationStatus("Save failed. Please try again.", true);
+            })
+            .finally(() => {
+                this.isSavingAnnotation = false;
+                // Process any queued saves that came in while we were saving.
+                this.processAnnotationSaveQueue();
+            });
+    }
+
+    queueAnnotationSave({ immediate = false } = {}) {
+        if (!this.selectedNote || this.suspendAutosave) return;
+
+        const payload = this.buildAnnotationPayload(this.selectedNote);
+        if (!payload) return;
+
+        // Store a snapshot for the currently edited note so switching notes can't change what we save.
+        this.pendingAnnotationSave = {
+            key: this.makePayloadKey(payload),
+            payload,
+            auto: true,
+        };
+
         if (this.annotationSaveTimer) {
             clearTimeout(this.annotationSaveTimer);
         }
+
+        const delay = immediate ? 0 : 250;
         this.annotationSaveTimer = window.setTimeout(() => {
             this.annotationSaveTimer = null;
-            this.saveAnnotation({ auto: true });
-        }, 250);
+            const pending = this.pendingAnnotationSave;
+            this.pendingAnnotationSave = null;
+            if (pending?.payload) {
+                this.enqueueAnnotationSave(pending.payload, { auto: pending.auto });
+            }
+        }, delay);
     }
 
-    async saveAnnotation({ auto = false } = {}) {
-        if (!this.config.annotationApiUrl || !this.selectedNote || this.isSavingAnnotation) {
-            return;
+    flushPendingAnnotationSave() {
+        if (this.annotationSaveTimer) {
+            clearTimeout(this.annotationSaveTimer);
+            this.annotationSaveTimer = null;
         }
-
-        const tonal = this.getPieSelection("tonal") || "";
-        const articulation = this.getPieSelection("articulation") || "";
-
-        const payload = {
-            pitch: this.selectedNote.pitch,
-            start: this.selectedNote.start,
-            end: this.selectedNote.end,
-            tonalTechnique: tonal,
-            articulation,
-        };
-
-        this.isSavingAnnotation = true;
-        this.setAnnotationStatus(auto ? "Saving…" : "Saving annotation…", false);
-
-        try {
-            const response = await fetch(this.config.annotationApiUrl, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
-            });
-            if (!response.ok) {
-                throw new Error(`Save failed (${response.status})`);
-            }
-            this.selectedNote.annotation = {
-                tonalTechnique: tonal,
-                articulation,
-            };
-            this.setAnnotationStatus(auto ? "Changes autosaved." : "Annotation saved.", false);
-        } catch (error) {
-            console.error("Failed to save annotation", error);
-            this.setAnnotationStatus("Save failed. Please try again.", true);
-        } finally {
-            this.isSavingAnnotation = false;
+        const pending = this.pendingAnnotationSave;
+        this.pendingAnnotationSave = null;
+        if (pending?.payload) {
+            this.enqueueAnnotationSave(pending.payload, { auto: pending.auto });
         }
     }
 
