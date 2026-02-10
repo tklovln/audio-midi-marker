@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import json
 import mimetypes
+import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -360,6 +362,89 @@ def _guess_mimetype(path: Path) -> str:
     return mimetype or "application/octet-stream"
 
 
+def _probe_video_codec(path: Path) -> str | None:
+    """
+    Returns ffprobe codec_name for the first video stream (e.g., 'h264', 'mpeg4').
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "default=nw=1:nk=1",
+                str(path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        codec = (result.stdout or "").strip()
+        return codec or None
+    except Exception:
+        return None
+
+
+def _ensure_browser_video(video_path: Path) -> Path:
+    """
+    Many browsers don't reliably play MP4 files encoded with MPEG-4 Part 2 ('mpeg4').
+    If the codec isn't H.264, transcode once to H.264 for HTML5 playback.
+    """
+    codec = _probe_video_codec(video_path)
+    if codec == "h264":
+        return video_path
+
+    out_path = video_path.with_name(f"{video_path.stem}.h264.mp4")
+    try:
+        if out_path.exists() and out_path.stat().st_size > 0:
+            # Reuse cached transcode if it's at least as new as the input.
+            if out_path.stat().st_mtime >= video_path.stat().st_mtime:
+                return out_path
+    except Exception:
+        pass
+
+    # Best-effort transcode (video only; audio comes from the separate waveform audio file).
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(video_path),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-movflags",
+                "+faststart",
+                "-an",
+                str(out_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if out_path.exists() and out_path.stat().st_size > 0:
+            return out_path
+    except Exception:
+        # Fall back to original file (may not play in-browser, but keep endpoint working).
+        return video_path
+
+    return video_path
+
+
 def create_app():
     flask_app = Flask(__name__)
 
@@ -374,6 +459,13 @@ def create_app():
         song = get_song(song_name)
         if not song:
             abort(404)
+
+        enable_finger_tracking = str(os.environ.get("ENABLE_FINGER_TRACKING", "1")).lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
 
         palette = [
             "#7f55b1",
@@ -394,6 +486,7 @@ def create_app():
             "aiCommitApiUrl": url_for("ai_commit", song_name=song.name),
             "statusApiUrl": url_for("status_api", song_name=song.name),
             "completed": bool(song.completed),
+            "enableFingerTracking": bool(enable_finger_tracking),
             "windowSeconds": DEFAULT_VIEW_SECONDS,
             "palette": palette,
             "slicePaddingSeconds": 0.05,  # 50ms padding for midi note playback buffer
@@ -403,6 +496,7 @@ def create_app():
             "annotation.html",
             song=song,
             app_config=app_config,
+            enable_finger_tracking=enable_finger_tracking,
         )
 
     @flask_app.route("/audio/<song_name>")
@@ -424,7 +518,8 @@ def create_app():
         song = get_song(song_name)
         if not song or not song.video_path:
             abort(404)
-        return send_file(song.video_path, mimetype=_guess_mimetype(song.video_path))
+        playable = _ensure_browser_video(song.video_path)
+        return send_file(playable, mimetype=_guess_mimetype(playable))
 
     @flask_app.route("/api/midi/<song_name>")
     def midi_api(song_name: str):

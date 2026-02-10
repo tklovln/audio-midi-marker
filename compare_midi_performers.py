@@ -37,6 +37,11 @@ class NoteRec:
     start_order: int  # tie-breaker for same-tick onsets
 
 
+def ticks_to_sec(ticks: int, ticks_per_beat: int, bpm: float = 120.0) -> float:
+    """Convert MIDI ticks to seconds assuming a constant tempo."""
+    return ticks * 60.0 / (bpm * ticks_per_beat)
+
+
 def iter_midis(root: Path) -> Iterable[Path]:
     for p in root.rglob("*.mid"):
         if p.is_file():
@@ -71,7 +76,7 @@ def parse_identity(path: Path) -> MidiIdentity | None:
     )
 
 
-def extract_notes_ticks(midi_path: Path) -> list[NoteRec]:
+def extract_notes_ticks(midi_path: Path) -> tuple[list[NoteRec], int]:
     """
     Extract notes using tick timeline (tempo-independent) and keep a deterministic
     onset ordering using the message order for same-tick events.
@@ -117,7 +122,7 @@ def extract_notes_ticks(midi_path: Path) -> list[NoteRec]:
         )
 
     notes.sort(key=lambda n: (n.start_tick, n.start_order))
-    return notes
+    return notes, mid.ticks_per_beat
 
 
 def compare_pair(a_notes: list[NoteRec], b_notes: list[NoteRec]) -> dict:
@@ -136,16 +141,13 @@ def compare_pair(a_notes: list[NoteRec], b_notes: list[NoteRec]) -> dict:
             if na.end_tick != nb.end_tick:
                 offset_diff += 1
 
-    # First mismatch index (pitch sequence)
-    first_mismatch = None
+    # All mismatch indices (pitch sequence)
+    mismatch_indices: list[int] = []
     if not same_pitch_seq:
         limit = min(len(a_pitch), len(b_pitch))
         for i in range(limit):
             if a_pitch[i] != b_pitch[i]:
-                first_mismatch = i
-                break
-        if first_mismatch is None and len(a_pitch) != len(b_pitch):
-            first_mismatch = limit
+                mismatch_indices.append(i)
 
     return {
         "same_pitch_seq": same_pitch_seq,
@@ -153,19 +155,8 @@ def compare_pair(a_notes: list[NoteRec], b_notes: list[NoteRec]) -> dict:
         "b_count": len(b_notes),
         "onset_tick_diff_count": onset_diff,
         "offset_tick_diff_count": offset_diff,
-        "first_pitch_mismatch_index": first_mismatch,
+        "mismatch_indices": mismatch_indices,
     }
-
-
-def _pitch_context(notes: list[NoteRec], idx: int, radius: int) -> str:
-    start = max(0, idx - radius)
-    end = min(len(notes), idx + radius + 1)
-    parts = []
-    for i in range(start, end):
-        n = notes[i]
-        marker = ">>" if i == idx else "  "
-        parts.append(f"{marker}{i}:{n.pitch}@{n.start_tick}-{n.end_tick}")
-    return " | ".join(parts)
 
 
 def main(argv: list[str]) -> int:
@@ -179,7 +170,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path("/mnt/hdd/violin_media_outputs/Paganini"),
+        default=Path("/mnt/hdd/Violin_Media_Dataset/Paganini"),
         help="Directory to scan for MIDI files (default: %(default)s).",
     )
     parser.add_argument(
@@ -210,12 +201,6 @@ def main(argv: list[str]) -> int:
         "--verbose",
         action="store_true",
         help="Print per-performer selections and more detail.",
-    )
-    parser.add_argument(
-        "--mismatch-context",
-        type=int,
-        default=8,
-        help="When pitch order differs, show this many notes before/after the first mismatch (default: %(default)s).",
     )
     parser.add_argument(
         "--summary-only",
@@ -264,6 +249,7 @@ def main(argv: list[str]) -> int:
 
         selected: dict[str, Path] = {}
         note_cache: dict[str, list[NoteRec]] = {}
+        tpb_cache: dict[str, int] = {}
 
         for performer, items in sorted(perf_map.items()):
             # Pick a file
@@ -274,9 +260,10 @@ def main(argv: list[str]) -> int:
                 # largest_note_count: parse all and pick the one with most notes
                 best_path = None
                 best_notes: list[NoteRec] | None = None
+                best_tpb: int = 480
                 for ident, path in sorted(items, key=lambda t: t[1].name):
                     try:
-                        notes = extract_notes_ticks(path)
+                        notes, tpb = extract_notes_ticks(path)
                     except Exception as exc:
                         if args.verbose:
                             print(f"[skip] {path}: {exc}", file=sys.stderr)
@@ -284,10 +271,12 @@ def main(argv: list[str]) -> int:
                     if best_notes is None or len(notes) > len(best_notes):
                         best_notes = notes
                         best_path = path
+                        best_tpb = tpb
                 if best_path is None or best_notes is None:
                     continue
                 selected[performer] = best_path
                 note_cache[performer] = best_notes
+                tpb_cache[performer] = best_tpb
 
         performers = sorted(selected.keys())
         if len(performers) < 2:
@@ -303,13 +292,16 @@ def main(argv: list[str]) -> int:
             if performer in note_cache:
                 continue
             try:
-                note_cache[performer] = extract_notes_ticks(selected[performer])
+                notes, tpb = extract_notes_ticks(selected[performer])
+                note_cache[performer] = notes
+                tpb_cache[performer] = tpb
             except Exception as exc:
                 print(f"[error] failed to parse {selected[performer]}: {exc}", file=sys.stderr)
                 continue
 
         ref = performers[0]
         ref_notes = note_cache.get(ref)
+        ref_tpb = tpb_cache.get(ref, 480)
         if not ref_notes:
             continue
 
@@ -342,18 +334,21 @@ def main(argv: list[str]) -> int:
 
             if not result["same_pitch_seq"]:
                 piece_ok = False
-                idx = result["first_pitch_mismatch_index"]
+                mm_indices: list[int] = result["mismatch_indices"]
                 if not args.summary_only:
                     mismatch_lines.append(
-                        f"- mismatch vs {performer}: pitch_seq DIFFERENT (ref_count={result['a_count']}, other_count={result['b_count']}, first_mismatch_index={idx})"
+                        f"- mismatch vs {performer}: pitch_seq DIFFERENT (ref_count={result['a_count']}, other_count={result['b_count']}, mismatch_notes={len(mm_indices)})"
                     )
-                    if isinstance(idx, int) and 0 <= idx < len(ref_notes) and 0 <= idx < len(other_notes):
-                        mismatch_lines.append(
-                            f"  ref:   {_pitch_context(ref_notes, idx, args.mismatch_context)}"
-                        )
-                        mismatch_lines.append(
-                            f"  other: {_pitch_context(other_notes, idx, args.mismatch_context)}"
-                        )
+                    other_tpb = tpb_cache.get(performer, 480)
+                    for idx in mm_indices:
+                        if 0 <= idx < len(ref_notes) and 0 <= idx < len(other_notes):
+                            rn = ref_notes[idx]
+                            on = other_notes[idx]
+                            r_sec = ticks_to_sec(rn.start_tick, ref_tpb)
+                            o_sec = ticks_to_sec(on.start_tick, other_tpb)
+                            mismatch_lines.append(
+                                f"  [{idx:>5}] ref={rn.pitch:<3} other={on.pitch:<3} ref@{r_sec:.2f}s other@{o_sec:.2f}s"
+                            )
             else:
                 if not args.summary_only:
                     mismatch_lines.append(

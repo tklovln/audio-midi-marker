@@ -85,6 +85,7 @@ class AnnotationApp {
             { value: "release", label: "release", abbrev: "REL" },
             { value: "staccato", label: "staccato", abbrev: "STC" },
             { value: "spiccato", label: "spiccato", abbrev: "SPC" },
+            { value: "legato", label: "legato", abbrev: "LEG" },
             // { value: "accent", label: "accent", abbrev: "ACC" },
             // { value: "legato", label: "legato", abbrev: "LEG" },
             // { value: "tenuto", label: "tenuto", abbrev: "TEN" },
@@ -333,6 +334,9 @@ class AnnotationApp {
     }
 
     setupMediaPipe() {
+        if (!this.config.enableFingerTracking) {
+            return;
+        }
         if (this.hands || this.handsError) return;
         if (!window.Hands) {
             console.warn("MediaPipe Hands not loaded");

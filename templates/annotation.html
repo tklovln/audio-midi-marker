@@ -60,6 +60,7 @@
                 </div>
             </section>
 
+            {% if enable_finger_tracking %}
             <section class="panel panel--tracking" id="tracking-panel" style="flex: 1 1 40%; min-width: 260px;">
                 <div class="panel-head">
                     <div>
@@ -69,6 +70,7 @@
                 </div>
                 <canvas id="tracking-canvas" style="width: 100%; height: auto; background: #0a0a0a; border-radius: 12px;"></canvas>
             </section>
+            {% endif %}
         </div>
 
         <section class="panel panel--waveform">
@@ -211,9 +213,11 @@
     <script id="app-config" type="application/json">
         {{ app_config | tojson | safe }}
     </script>
+    {% if enable_finger_tracking %}
     <!-- Pin Hands; drawing_utils served unpinned (older versions not published with matching tag) -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    {% endif %}
     <script src="https://cdn.jsdelivr.net/npm/wavesurfer.js@7/dist/wavesurfer.min.js"></script>
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>

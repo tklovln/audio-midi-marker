@@ -102,7 +102,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--src",
         type=Path,
-        default=Path("/mnt/hdd/violin_media_outputs/Paganini"),
+        default=Path("/mnt/hdd/Violin_Media_Dataset/Wohlfahrt"),
         help="Source directory that contains pooled files (default: %(default)s).",
     )
     parser.add_argument(
