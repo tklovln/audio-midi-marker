@@ -60,6 +60,9 @@ class AnnotationApp {
                 ? config.slicePaddingSeconds
                 : 0.005;
         this.buttonFlashTimers = new Map();
+        this.legatoRanges = [];
+        this.legatoDragState = null;
+        this.legatoDragPreventClick = false;
         this.pieColors = ["#ffe1e0", "#eeece1", "#9b7ebd", "#f49bab", "#7f55b1", "#e16981"];
         this.selectedNote = null;
         this.isSavingAnnotation = false;
@@ -85,7 +88,6 @@ class AnnotationApp {
             { value: "release", label: "release", abbrev: "REL" },
             { value: "staccato", label: "staccato", abbrev: "STC" },
             { value: "spiccato", label: "spiccato", abbrev: "SPC" },
-            { value: "legato", label: "legato", abbrev: "LEG" },
             // { value: "accent", label: "accent", abbrev: "ACC" },
             // { value: "legato", label: "legato", abbrev: "LEG" },
             // { value: "tenuto", label: "tenuto", abbrev: "TEN" },
@@ -143,6 +145,7 @@ class AnnotationApp {
         this.setupControls();
         this.setupAiControls();
         this.renderNoteButtons();
+        this.setupLegatoDrag();
         this.renderMidi();
         this.renderWaveform();
     }
@@ -880,10 +883,24 @@ class AnnotationApp {
                 button.classList.add("ai-changed");
             }
 
-            button.addEventListener("mouseenter", () => this.updateNoteReadout(note));
+            button.addEventListener("mousedown", (e) => {
+                if (e.button !== 0) return;
+                e.stopPropagation();
+                this.startLegatoDrag(note);
+            });
+            button.addEventListener("mouseenter", () => {
+                if (this.legatoDragState) {
+                    this.updateLegatoDrag(note);
+                }
+                this.updateNoteReadout(note);
+            });
             button.addEventListener("focus", () => this.updateNoteReadout(note));
             button.addEventListener("click", (e) => {
                 e.stopPropagation();
+                if (this.legatoDragPreventClick) {
+                    this.legatoDragPreventClick = false;
+                    return;
+                }
                 this.focusNote(note);
                 this.playSlice(note.start, note.end);
             });
@@ -891,7 +908,157 @@ class AnnotationApp {
             midiGrid.appendChild(button);
         });
 
+        this.renderLegatoOverlays();
         this.updateCursor(this.currentTime);
+    }
+
+    setupLegatoDrag() {
+        document.addEventListener("mouseup", () => {
+            if (this.legatoDragState) {
+                this.endLegatoDrag();
+            }
+        });
+    }
+
+    startLegatoDrag(note) {
+        const noteKey = note.noteKey || this.makeNoteKey(note);
+        const noteIdx = this.notes.findIndex(
+            (n) => (n.noteKey || this.makeNoteKey(n)) === noteKey
+        );
+        this.legatoDragState = {
+            startNote: note,
+            startNoteIdx: noteIdx,
+            currentNote: note,
+            currentNoteIdx: noteIdx,
+        };
+    }
+
+    updateLegatoDrag(note) {
+        if (!this.legatoDragState) return;
+        const noteKey = note.noteKey || this.makeNoteKey(note);
+        const noteIdx = this.notes.findIndex(
+            (n) => (n.noteKey || this.makeNoteKey(n)) === noteKey
+        );
+        this.legatoDragState.currentNote = note;
+        this.legatoDragState.currentNoteIdx = noteIdx;
+        this.renderLegatoOverlays();
+    }
+
+    endLegatoDrag() {
+        if (!this.legatoDragState) return;
+        const { startNoteIdx, currentNoteIdx, startNote, currentNote } = this.legatoDragState;
+        const startKey = startNote.noteKey || this.makeNoteKey(startNote);
+        const endKey = currentNote.noteKey || this.makeNoteKey(currentNote);
+
+        if (startKey !== endKey && startNoteIdx !== -1 && currentNoteIdx !== -1) {
+            this.addLegatoRange(startNoteIdx, currentNoteIdx);
+            this.legatoDragPreventClick = true;
+            setTimeout(() => {
+                this.legatoDragPreventClick = false;
+            }, 100);
+        }
+
+        this.legatoDragState = null;
+        this.renderLegatoOverlays();
+    }
+
+    addLegatoRange(idx1, idx2) {
+        const fromIdx = Math.min(idx1, idx2);
+        const toIdx = Math.max(idx1, idx2);
+        const startNote = this.notes[fromIdx];
+        const endNote = this.notes[toIdx];
+
+        // Remove any existing legato range that overlaps with this one
+        this.legatoRanges = this.legatoRanges.filter((range) => {
+            return range.toIdx < fromIdx || range.fromIdx > toIdx;
+        });
+
+        this.legatoRanges.push({
+            fromIdx,
+            toIdx,
+            startTime: startNote.start,
+            endTime: endNote.end,
+            startNoteKey: startNote.noteKey || this.makeNoteKey(startNote),
+            endNoteKey: endNote.noteKey || this.makeNoteKey(endNote),
+        });
+
+        this.renderLegatoOverlays();
+    }
+
+    removeLegatoRange(index) {
+        if (index >= 0 && index < this.legatoRanges.length) {
+            this.legatoRanges.splice(index, 1);
+            this.renderLegatoOverlays();
+        }
+    }
+
+    renderLegatoOverlays() {
+        const grid = this.dom.midiGrid;
+        if (!grid) return;
+
+        // Remove existing overlays
+        grid.querySelectorAll(".legato-overlay").forEach((el) => el.remove());
+
+        const viewEnd = this.viewStart + this.viewSize;
+
+        // Render committed legato ranges
+        this.legatoRanges.forEach((range, rangeIdx) => {
+            this.renderSingleLegatoOverlay(grid, range.startTime, range.endTime, viewEnd, {
+                isPreview: false,
+                rangeIdx,
+            });
+        });
+
+        // Render drag preview
+        if (this.legatoDragState) {
+            const { startNote, currentNote, startNoteIdx, currentNoteIdx } = this.legatoDragState;
+            const startKey = startNote.noteKey || this.makeNoteKey(startNote);
+            const endKey = currentNote.noteKey || this.makeNoteKey(currentNote);
+
+            if (startKey !== endKey && startNoteIdx >= 0 && currentNoteIdx >= 0) {
+                const fromIdx = Math.min(startNoteIdx, currentNoteIdx);
+                const toIdx = Math.max(startNoteIdx, currentNoteIdx);
+                const previewStart = this.notes[fromIdx].start;
+                const previewEnd = this.notes[toIdx].end;
+                this.renderSingleLegatoOverlay(grid, previewStart, previewEnd, viewEnd, {
+                    isPreview: true,
+                });
+            }
+        }
+    }
+
+    renderSingleLegatoOverlay(grid, startTime, endTime, viewEnd, options = {}) {
+        if (endTime <= this.viewStart || startTime >= viewEnd) return;
+
+        const clippedStart = Math.max(startTime, this.viewStart);
+        const clippedEnd = Math.min(endTime, viewEnd);
+        const left = ((clippedStart - this.viewStart) / this.viewSize) * 100;
+        const width = ((clippedEnd - clippedStart) / this.viewSize) * 100;
+
+        const overlay = document.createElement("div");
+        overlay.className = options.isPreview
+            ? "legato-overlay legato-preview"
+            : "legato-overlay legato-range";
+        overlay.style.left = `${left}%`;
+        overlay.style.width = `${width}%`;
+
+        if (!options.isPreview && typeof options.rangeIdx === "number") {
+            const range = this.legatoRanges[options.rangeIdx];
+            overlay.title = `Legato (${range.startTime.toFixed(2)}s → ${range.endTime.toFixed(2)}s) · Right-click to remove`;
+
+            // Label
+            const label = document.createElement("span");
+            label.className = "legato-label";
+            label.textContent = "legato";
+            overlay.appendChild(label);
+
+            overlay.addEventListener("contextmenu", (e) => {
+                e.preventDefault();
+                this.removeLegatoRange(options.rangeIdx);
+            });
+        }
+
+        grid.appendChild(overlay);
     }
 
     renderNoteButtons() {

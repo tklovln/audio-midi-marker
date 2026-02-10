@@ -383,7 +383,6 @@ h1, h2, h3 {
     position: relative;
     width: 100%;
     height: clamp(90px, 18vh, 140px);
-    border-radius: 1.25rem;
     overflow: hidden;
     background: rgba(255, 255, 255, 0.6);
 }
@@ -404,9 +403,8 @@ h1, h2, h3 {
 .midi-wrapper {
     position: relative;
     height: 260px;
-    border-radius: 1.25rem;
     background: linear-gradient(180deg, rgba(255, 225, 224, 0.5), rgba(238, 236, 225, 0.8));
-    overflow: hidden;
+    overflow: clip;
 }
 
 .midi-grid {
@@ -428,8 +426,7 @@ h1, h2, h3 {
 
 .midi-note:hover,
 .midi-note:focus-visible {
-    transform: translateY(-1px);
-    box-shadow: 0 8px 18px rgba(225, 105, 129, 0.35);
+    box-shadow: 0 8px 10px rgba(225, 105, 129, 0.35);
 }
 
 .panel-cursor {
@@ -702,5 +699,49 @@ code {
 .midi-note.ai-changed {
     background: #f49bab;
     color: #1f1630;
+}
+
+/* ── Legato range overlays ── */
+
+.midi-grid {
+    user-select: none;
+}
+
+.midi-note {
+    z-index: 1;
+}
+
+.legato-overlay {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 0;
+    pointer-events: none;
+    border-radius: 4px;
+}
+
+.legato-range {
+    background: rgba(34, 197, 94, 0.15);
+    border-left: 2.5px solid rgba(34, 197, 94, 0.5);
+    border-right: 2.5px solid rgba(34, 197, 94, 0.5);
+    pointer-events: auto;
+    cursor: default;
+}
+
+.legato-preview {
+    background: rgba(34, 197, 94, 0.08);
+    border: 2px dashed rgba(34, 197, 94, 0.4);
+}
+
+.legato-label {
+    position: absolute;
+    top: 4px;
+    left: 8px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: rgba(34, 197, 94, 0.7);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    pointer-events: none;
 }
 
