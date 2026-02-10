@@ -970,13 +970,13 @@ class AnnotationApp {
         const startNote = this.notes[fromIdx];
         const endNote = this.notes[toIdx];
 
-        // Collect notes from overlapping ranges that fall OUTSIDE the new range
-        // — these need legato=0 persisted to the backend.
+        // Collect notes from overlapping ranges that fall OUTSIDE the new
+        // legato=1 region (fromIdx+1..toIdx) — these need legato=0 persisted.
         const clearedNotes = [];
         this.legatoRanges.forEach((range) => {
             if (!(range.toIdx < fromIdx || range.fromIdx > toIdx)) {
                 for (let i = range.fromIdx; i <= range.toIdx; i++) {
-                    if (i < fromIdx || i > toIdx) {
+                    if (i <= fromIdx || i > toIdx) {
                         if (this.notes[i]) {
                             this.notes[i].annotation.legato = 0;
                             clearedNotes.push({
@@ -996,9 +996,9 @@ class AnnotationApp {
             return range.toIdx < fromIdx || range.fromIdx > toIdx;
         });
 
-        // Set legato=1 on all notes in the new range
+        // Set legato=1 on notes i+1 through j (note i stays 0)
         const legatoNotes = [];
-        for (let i = fromIdx; i <= toIdx; i++) {
+        for (let i = fromIdx + 1; i <= toIdx; i++) {
             this.notes[i].annotation.legato = 1;
             legatoNotes.push({
                 pitch: this.notes[i].pitch,
@@ -1026,9 +1026,9 @@ class AnnotationApp {
 
         const range = this.legatoRanges[index];
 
-        // Set legato=0 on all notes in the removed range
+        // Set legato=0 on notes i+1 through j (note i was already 0)
         const legatoNotes = [];
-        for (let i = range.fromIdx; i <= range.toIdx; i++) {
+        for (let i = range.fromIdx + 1; i <= range.toIdx; i++) {
             if (this.notes[i]) {
                 this.notes[i].annotation.legato = 0;
                 legatoNotes.push({
@@ -1047,15 +1047,17 @@ class AnnotationApp {
 
     reconstructLegatoRanges() {
         this.legatoRanges = [];
-        let rangeStart = null;
+        let firstLegatoIdx = null;
 
         for (let i = 0; i < this.notes.length; i++) {
             const isLegato = this.notes[i].annotation?.legato === 1;
 
-            if (isLegato && rangeStart === null) {
-                rangeStart = i;
-            } else if (!isLegato && rangeStart !== null) {
-                const fromIdx = rangeStart;
+            if (isLegato && firstLegatoIdx === null) {
+                firstLegatoIdx = i;
+            } else if (!isLegato && firstLegatoIdx !== null) {
+                // Run of legato=1 was at indices firstLegatoIdx..(i-1).
+                // The visual range starts one note earlier (note i itself is legato=0).
+                const fromIdx = Math.max(firstLegatoIdx - 1, 0);
                 const toIdx = i - 1;
                 this.legatoRanges.push({
                     fromIdx,
@@ -1065,13 +1067,13 @@ class AnnotationApp {
                     startNoteKey: this.notes[fromIdx].noteKey || this.makeNoteKey(this.notes[fromIdx]),
                     endNoteKey: this.notes[toIdx].noteKey || this.makeNoteKey(this.notes[toIdx]),
                 });
-                rangeStart = null;
+                firstLegatoIdx = null;
             }
         }
 
-        // Handle range extending to the last note
-        if (rangeStart !== null) {
-            const fromIdx = rangeStart;
+        // Handle run extending to the last note
+        if (firstLegatoIdx !== null) {
+            const fromIdx = Math.max(firstLegatoIdx - 1, 0);
             const toIdx = this.notes.length - 1;
             this.legatoRanges.push({
                 fromIdx,
