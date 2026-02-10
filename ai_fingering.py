@@ -7,10 +7,23 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 
+import os
+
+# Use TensorFlow as the Keras 3 backend
+os.environ.setdefault("KERAS_BACKEND", "tensorflow")
+
+import keras  # noqa: E402  (env var must be set before import)
 import librosa
 import numpy as np
 from midi2audio import FluidSynth
-from tensorflow import keras
+
+# Compatibility shim: TF 2.14 exposes `tensorflow.keras` via a lazy loader
+# that resolves to `keras.api._v2.keras` (Keras 2 structure).  With standalone
+# Keras 3 installed, that path no longer exists.  Patch `sys.modules` so that
+# `from tensorflow import keras` in third-party code (e.g. inference.py) finds
+# the standalone Keras 3 package instead of crashing.
+import tensorflow as _tf  # noqa: E402
+_tf.keras = keras
 
 # Add project repo for direct imports of the reference inference code
 BASE_DIR = Path(__file__).resolve().parent
@@ -185,7 +198,16 @@ def extract_audio_features(
 @lru_cache(maxsize=1)
 def _load_model(checkpoint: str):
     LOGGER.info("Loading fingering model from %s", checkpoint)
-    return keras.models.load_model(checkpoint)
+    # Map legacy TF-Keras class names so Keras 3 can deserialize the H5 file.
+    custom_objects = {
+        "LSTM": keras.layers.LSTM,
+        "Dense": keras.layers.Dense,
+        "Bidirectional": keras.layers.Bidirectional,
+        "LayerNormalization": keras.layers.LayerNormalization,
+        "Concatenate": keras.layers.Concatenate,
+        "Dropout": keras.layers.Dropout,
+    }
+    return keras.models.load_model(checkpoint, custom_objects=custom_objects)
 
 
 def run_model(
