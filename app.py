@@ -38,6 +38,7 @@ ANNOTATION_HEADERS = [
     "stringId",
     "position",
     "finger",
+    "legato",
 ]
 
 
@@ -65,6 +66,7 @@ def empty_annotation(pitch: int, start: float, end: float):
         "stringId": None,
         "position": None,
         "finger": None,
+        "legato": 0,
     }
 
 
@@ -73,7 +75,7 @@ def merge_annotation(existing: dict, updates: dict):
     for field in ["pitch", "start", "end"]:
         if field in updates:
             merged[field] = updates[field]
-    for field in ["tonalTechnique", "articulation", "stringId", "position", "finger"]:
+    for field in ["tonalTechnique", "articulation", "stringId", "position", "finger", "legato"]:
         if updates.get(field) is not None:
             merged[field] = updates[field]
     return merged
@@ -292,6 +294,7 @@ def read_annotations(song: Song):
                 "stringId": string_id,
                 "position": _safe_int(row.get("position")),
                 "finger": _safe_int(row.get("finger")),
+                "legato": _safe_int(row.get("legato"), 0) or 0,
             }
     return annotations
 
@@ -315,6 +318,7 @@ def write_annotations(song: Song, annotation_map):
                     "stringId": "" if record.get("stringId") is None else record.get("stringId"),
                     "position": "" if record.get("position") is None else record.get("position"),
                     "finger": "" if record.get("finger") is None else record.get("finger"),
+                    "legato": record.get("legato", 0) or 0,
                 }
             )
 
@@ -482,6 +486,7 @@ def create_app():
             "midiApiUrl": url_for("midi_api", song_name=song.name),
             "waveformApiUrl": url_for("waveform_api", song_name=song.name),
             "annotationApiUrl": url_for("annotation_api", song_name=song.name),
+            "legatoApiUrl": url_for("legato_api", song_name=song.name),
             "aiGenerateApiUrl": url_for("ai_generate", song_name=song.name),
             "aiCommitApiUrl": url_for("ai_commit", song_name=song.name),
             "statusApiUrl": url_for("status_api", song_name=song.name),
@@ -538,6 +543,7 @@ def create_app():
                 "stringId": annotation.get("stringId"),
                 "position": annotation.get("position"),
                 "finger": annotation.get("finger"),
+                "legato": annotation.get("legato", 0) or 0,
             }
         duration = max((note["end"] for note in notes), default=0)
         return jsonify({"notes": notes, "duration": duration})
@@ -560,6 +566,7 @@ def create_app():
         string_id = _safe_int(payload.get("stringId"))
         position = _safe_int(payload.get("position"))
         finger = _safe_int(payload.get("finger"))
+        legato = _safe_int(payload.get("legato"))
 
         annotations = read_annotations(song)
         key = (pitch, start)
@@ -577,10 +584,47 @@ def create_app():
             updates["position"] = position
         if finger is not None:
             updates["finger"] = finger
+        if legato is not None:
+            updates["legato"] = legato
 
         annotations[key] = merge_annotation(base, updates)
         write_annotations(song, annotations)
         return jsonify({"status": "ok"})
+
+    @flask_app.route("/api/legato/<song_name>", methods=["POST"])
+    def legato_api(song_name: str):
+        """Batch-update the legato flag for multiple notes at once."""
+        song = get_song(song_name)
+        if not song:
+            abort(404)
+
+        payload = request.get_json(silent=True) or {}
+        note_updates = payload.get("notes") or []
+        if not isinstance(note_updates, list):
+            abort(400, description="notes must be a list")
+
+        annotations = read_annotations(song)
+        updated = 0
+
+        for item in note_updates:
+            try:
+                p = int(item["pitch"])
+                s = float(item["start"])
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            legato_val = _safe_int(item.get("legato"), 0) or 0
+            key = (p, s)
+            base = annotations.get(key)
+            if base is None:
+                end = _safe_float(item.get("end"), 0.0)
+                base = empty_annotation(p, s, end)
+            base["legato"] = legato_val
+            annotations[key] = base
+            updated += 1
+
+        write_annotations(song, annotations)
+        return jsonify({"status": "ok", "updated": updated})
 
     @flask_app.route("/api/ai/generate/<song_name>", methods=["POST"])
     def ai_generate(song_name: str):

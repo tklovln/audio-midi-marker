@@ -146,6 +146,7 @@ class AnnotationApp {
         this.setupAiControls();
         this.renderNoteButtons();
         this.setupLegatoDrag();
+        this.reconstructLegatoRanges();
         this.renderMidi();
         this.renderWaveform();
     }
@@ -222,6 +223,7 @@ class AnnotationApp {
                         stringId: note.annotation?.stringId ?? null,
                         position: note.annotation?.position ?? null,
                         finger: note.annotation?.finger ?? null,
+                        legato: note.annotation?.legato ?? 0,
                     },
                     aiSuggestion: null,
                     aiChanged: false,
@@ -968,10 +970,43 @@ class AnnotationApp {
         const startNote = this.notes[fromIdx];
         const endNote = this.notes[toIdx];
 
+        // Collect notes from overlapping ranges that fall OUTSIDE the new range
+        // — these need legato=0 persisted to the backend.
+        const clearedNotes = [];
+        this.legatoRanges.forEach((range) => {
+            if (!(range.toIdx < fromIdx || range.fromIdx > toIdx)) {
+                for (let i = range.fromIdx; i <= range.toIdx; i++) {
+                    if (i < fromIdx || i > toIdx) {
+                        if (this.notes[i]) {
+                            this.notes[i].annotation.legato = 0;
+                            clearedNotes.push({
+                                pitch: this.notes[i].pitch,
+                                start: this.notes[i].start,
+                                end: this.notes[i].end,
+                                legato: 0,
+                            });
+                        }
+                    }
+                }
+            }
+        });
+
         // Remove any existing legato range that overlaps with this one
         this.legatoRanges = this.legatoRanges.filter((range) => {
             return range.toIdx < fromIdx || range.fromIdx > toIdx;
         });
+
+        // Set legato=1 on all notes in the new range
+        const legatoNotes = [];
+        for (let i = fromIdx; i <= toIdx; i++) {
+            this.notes[i].annotation.legato = 1;
+            legatoNotes.push({
+                pitch: this.notes[i].pitch,
+                start: this.notes[i].start,
+                end: this.notes[i].end,
+                legato: 1,
+            });
+        }
 
         this.legatoRanges.push({
             fromIdx,
@@ -982,13 +1017,86 @@ class AnnotationApp {
             endNoteKey: endNote.noteKey || this.makeNoteKey(endNote),
         });
 
+        this.saveLegatoBatch([...clearedNotes, ...legatoNotes]);
         this.renderLegatoOverlays();
     }
 
     removeLegatoRange(index) {
-        if (index >= 0 && index < this.legatoRanges.length) {
-            this.legatoRanges.splice(index, 1);
-            this.renderLegatoOverlays();
+        if (index < 0 || index >= this.legatoRanges.length) return;
+
+        const range = this.legatoRanges[index];
+
+        // Set legato=0 on all notes in the removed range
+        const legatoNotes = [];
+        for (let i = range.fromIdx; i <= range.toIdx; i++) {
+            if (this.notes[i]) {
+                this.notes[i].annotation.legato = 0;
+                legatoNotes.push({
+                    pitch: this.notes[i].pitch,
+                    start: this.notes[i].start,
+                    end: this.notes[i].end,
+                    legato: 0,
+                });
+            }
+        }
+
+        this.legatoRanges.splice(index, 1);
+        this.saveLegatoBatch(legatoNotes);
+        this.renderLegatoOverlays();
+    }
+
+    reconstructLegatoRanges() {
+        this.legatoRanges = [];
+        let rangeStart = null;
+
+        for (let i = 0; i < this.notes.length; i++) {
+            const isLegato = this.notes[i].annotation?.legato === 1;
+
+            if (isLegato && rangeStart === null) {
+                rangeStart = i;
+            } else if (!isLegato && rangeStart !== null) {
+                const fromIdx = rangeStart;
+                const toIdx = i - 1;
+                this.legatoRanges.push({
+                    fromIdx,
+                    toIdx,
+                    startTime: this.notes[fromIdx].start,
+                    endTime: this.notes[toIdx].end,
+                    startNoteKey: this.notes[fromIdx].noteKey || this.makeNoteKey(this.notes[fromIdx]),
+                    endNoteKey: this.notes[toIdx].noteKey || this.makeNoteKey(this.notes[toIdx]),
+                });
+                rangeStart = null;
+            }
+        }
+
+        // Handle range extending to the last note
+        if (rangeStart !== null) {
+            const fromIdx = rangeStart;
+            const toIdx = this.notes.length - 1;
+            this.legatoRanges.push({
+                fromIdx,
+                toIdx,
+                startTime: this.notes[fromIdx].start,
+                endTime: this.notes[toIdx].end,
+                startNoteKey: this.notes[fromIdx].noteKey || this.makeNoteKey(this.notes[fromIdx]),
+                endNoteKey: this.notes[toIdx].noteKey || this.makeNoteKey(this.notes[toIdx]),
+            });
+        }
+    }
+
+    async saveLegatoBatch(notes) {
+        if (!this.config.legatoApiUrl || !notes.length) return;
+        try {
+            const response = await fetch(this.config.legatoApiUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ notes }),
+            });
+            if (!response.ok) throw new Error(`Legato save failed (${response.status})`);
+            this.setAnnotationStatus("Legato saved.", false);
+        } catch (error) {
+            console.error("Failed to save legato", error);
+            this.setAnnotationStatus("Legato save failed.", true);
         }
     }
 
@@ -1044,7 +1152,7 @@ class AnnotationApp {
 
         if (!options.isPreview && typeof options.rangeIdx === "number") {
             const range = this.legatoRanges[options.rangeIdx];
-            overlay.title = `Legato (${range.startTime.toFixed(2)}s → ${range.endTime.toFixed(2)}s) · Right-click to remove`;
+            overlay.title = `Legato (${range.startTime.toFixed(2)}s → ${range.endTime.toFixed(2)}s)`;
 
             // Label
             const label = document.createElement("span");
@@ -1052,10 +1160,17 @@ class AnnotationApp {
             label.textContent = "legato";
             overlay.appendChild(label);
 
-            overlay.addEventListener("contextmenu", (e) => {
+            // Delete button
+            const deleteBtn = document.createElement("button");
+            deleteBtn.className = "legato-delete";
+            deleteBtn.textContent = "\u00d7";
+            deleteBtn.title = "Remove legato range";
+            deleteBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
                 e.preventDefault();
                 this.removeLegatoRange(options.rangeIdx);
             });
+            overlay.appendChild(deleteBtn);
         }
 
         grid.appendChild(overlay);
@@ -1554,6 +1669,7 @@ class AnnotationApp {
             stringId: annotation.stringId ?? null,
             position: annotation.position ?? null,
             finger: annotation.finger ?? null,
+            legato: annotation.legato ?? 0,
         };
     }
 
@@ -1601,6 +1717,7 @@ class AnnotationApp {
                         stringId: next.payload.stringId ?? null,
                         position: next.payload.position ?? null,
                         finger: next.payload.finger ?? null,
+                        legato: next.payload.legato ?? (match.annotation?.legato ?? 0),
                     };
                 }
                 if (this.selectedNote && (this.selectedNote.noteKey || this.makeNoteKey(this.selectedNote)) === key) {
@@ -1610,6 +1727,7 @@ class AnnotationApp {
                         stringId: next.payload.stringId ?? null,
                         position: next.payload.position ?? null,
                         finger: next.payload.finger ?? null,
+                        legato: next.payload.legato ?? (this.selectedNote.annotation?.legato ?? 0),
                     };
                 }
                 this.setAnnotationStatus(next.auto ? "Changes autosaved." : "Annotation saved.", false);
