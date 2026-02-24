@@ -1108,6 +1108,11 @@ class AnnotationApp {
 
         // Remove existing overlays
         grid.querySelectorAll(".legato-overlay").forEach((el) => el.remove());
+        
+        // Clear active legato styling from notes
+        grid.querySelectorAll(".midi-note.legato-active").forEach((el) => {
+            el.classList.remove("legato-active");
+        });
 
         const viewEnd = this.viewStart + this.viewSize;
 
@@ -1133,6 +1138,16 @@ class AnnotationApp {
                 this.renderSingleLegatoOverlay(grid, previewStart, previewEnd, viewEnd, {
                     isPreview: true,
                 });
+                
+                // Highlight notes within the drag range
+                for (let i = fromIdx; i <= toIdx; i++) {
+                    const note = this.notes[i];
+                    const key = note.noteKey || this.makeNoteKey(note);
+                    const btn = grid.querySelector(`[data-note-key="${CSS.escape(key)}"]`);
+                    if (btn) {
+                        btn.classList.add("legato-active");
+                    }
+                }
             }
         }
     }
