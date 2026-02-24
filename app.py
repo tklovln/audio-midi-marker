@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import subprocess
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -20,6 +21,8 @@ from flask import (
     request,
     send_file,
     url_for,
+    redirect, 
+    abort
 )
 from ai_fingering import generate_predictions, note_key_from_parts
 
@@ -471,6 +474,20 @@ def create_app():
             "off",
         }
 
+        # Determine audio URL (static Nginx or Flask route)
+        static_audio_prefix = os.environ.get("STATIC_AUDIO_PREFIX")
+        if static_audio_prefix:
+            # Use Nginx static path: /data/<folder_name>/<filename>
+            # Ensure proper URL encoding for paths
+            folder_part = urllib.parse.quote(song.name)
+            file_part = urllib.parse.quote(song.audio_path.name)
+            # Remove trailing slash from prefix if present to avoid double slashes
+            prefix = static_audio_prefix.rstrip("/")
+            audio_url = f"{prefix}/{folder_part}/{file_part}"
+        else:
+            # Fallback to Flask route
+            audio_url = url_for("audio_file", song_name=song.name)
+
         palette = [
             "#7f55b1",
             "#9b7ebd",
@@ -481,7 +498,7 @@ def create_app():
         ]
         app_config = {
             "songName": song.name,
-            "audioUrl": url_for("audio_file", song_name=song.name),
+            "audioUrl": audio_url,
             "videoUrl": url_for("video_file", song_name=song.name) if song.video_path else None,
             "midiApiUrl": url_for("midi_api", song_name=song.name),
             "waveformApiUrl": url_for("waveform_api", song_name=song.name),
@@ -504,12 +521,59 @@ def create_app():
             enable_finger_tracking=enable_finger_tracking,
         )
 
-    @flask_app.route("/audio/<song_name>")
-    def audio_file(song_name: str):
+    @flask_app.get("/audio_test")
+    def audio_test():
+        return ("ok\n", 200, {"Content-Type": "text/plain"})
+
+    import sys, time, os
+
+    # @flask_app.route("/audio/<song_name>")
+    # def audio_file(song_name: str):
+    #     import time
+        
+    #     song = get_song(song_name)
+
+    #     if not song:
+    #         abort(404)
+       
+    #     return send_file(
+    #         song.audio_path, 
+    #         mimetype=_guess_mimetype(song.audio_path), 
+    #         conditional=True
+    #     )
+    from flask import Response, abort
+    @flask_app.get("/audio/<song_name>")
+    def audio_file(song_name):
         song = get_song(song_name)
         if not song:
             abort(404)
-        return send_file(song.audio_path, mimetype=_guess_mimetype(song.audio_path))
+        path = song.audio_path
+        size = os.path.getsize(path)
+        # 先回 1KB，確認 headers/first bytes 在外部是能送出的
+        with open(path, "rb") as f:
+            head = f.read(1024)
+
+        return Response(
+            head,
+            status=206,
+            mimetype="audio/wav",
+            headers={
+                "Content-Range": f"bytes 0-1023/{size}",
+                "Accept-Ranges": "bytes",
+            },
+        )
+
+    # STATIC_BASE = "http://192.168.44.131:18080"  # 之後可換成 nginx/80/443
+    # import urllib.parse
+    # @flask_app.route("/audio/<song_name>")
+    # def audio_file(song_name: str):
+    #     song = get_song(song_name)
+    #     if not song:
+    #         abort(404)
+
+    #     # 只把檔名露出去（避免路徑穿越）
+    #     fname = os.path.basename(song.audio_path)
+    #     return redirect(f"{STATIC_BASE}/{urllib.parse.quote(fname)}", code=302)
 
     @flask_app.route("/midi/<song_name>")
     def midi_file(song_name: str):
