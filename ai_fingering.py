@@ -27,7 +27,7 @@ _tf.keras = keras
 
 # Add project repo for direct imports of the reference inference code
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_REPO = BASE_DIR.parent / "Violin-Fingering-Generation-Through-Audio-Symbolic-Fusion" / "Code"
+MODEL_REPO = BASE_DIR / "Violin-Fingering-Generation-Through-Audio-Symbolic-Fusion" / "Code"
 sys.path.insert(0, str(MODEL_REPO))
 
 import inference as vf_inference  # noqa: E402  (import after sys.path mutation)
