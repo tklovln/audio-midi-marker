@@ -481,7 +481,10 @@ class AnnotationApp {
         this.wave.on("finish", () => this.setPlaying(false));
 
         this.wave.on("play", () => {
-            if (this.dom.videoPlayer) this.dom.videoPlayer.play();
+            if (this.dom.videoPlayer) {
+                const p = this.dom.videoPlayer.play();
+                if (p && p.catch) p.catch(() => {});
+            }
         });
         this.wave.on("pause", () => {
             if (this.dom.videoPlayer) this.dom.videoPlayer.pause();
@@ -538,9 +541,9 @@ class AnnotationApp {
                 event.key === " " ||
                 event.key === "Spacebar";
 
-            if (!isSpace && event.code !== "ArrowRight" && event.code !== "ArrowLeft") {
-                return;
-            }
+            // if (!isSpace && event.code !== "ArrowRight" && event.code !== "ArrowLeft") {
+            //     return;
+            // }
             const activeTag =
                 document.activeElement?.tagName?.toLowerCase() || "";
             const isTyping =
@@ -548,7 +551,29 @@ class AnnotationApp {
                 activeTag === "textarea" ||
                 document.activeElement?.isContentEditable;
 
-            if (isTyping) return;
+            // Articulation shortcuts (A, S, D, F)
+
+            const code = event.code;
+            if (code === "KeyA") {
+                this.setPieSelection("articulation", "");
+                this.queueAnnotationSave({ immediate: true });
+                return;
+            }
+            if (code === "KeyS") {
+                this.setPieSelection("articulation", "release");
+                this.queueAnnotationSave({ immediate: true });
+                return;
+            }
+            if (code === "KeyD") {
+                this.setPieSelection("articulation", "staccato");
+                this.queueAnnotationSave({ immediate: true });
+                return;
+            }
+            if (code === "KeyF") {
+                 this.setPieSelection("articulation", "spiccato");
+                this.queueAnnotationSave({ immediate: true });
+                return;
+            }
 
             if (event.code === "ArrowRight") {
                 event.preventDefault();
@@ -873,6 +898,12 @@ class AnnotationApp {
             button.style.top = `calc(${top}% - 14px)`;
             button.style.height = "28px";
             this.applyArticulationColorToMidiButton(button, note.annotation?.articulation || "");
+            
+            const tonal = note.annotation?.tonalTechnique;
+            if (tonal) {
+                button.classList.add(`tonal-${tonal.replace(/\s+/g, '-').toLowerCase()}`);
+            }
+
             const pitchLabel = this.getPitchLabel(note.pitch);
             button.textContent = pitchLabel;
             button.title = `Pitch ${pitchLabel} (${note.start.toFixed(2)}s → ${note.end.toFixed(2)}s)`;
@@ -998,13 +1029,36 @@ class AnnotationApp {
 
         // Set legato=1 on notes i+1 through j (note i stays 0)
         const legatoNotes = [];
+        
+        // 1. Force the start note (fromIdx) to 0 to mark the beginning of the slur.
+        if (this.notes[fromIdx]) {
+             this.notes[fromIdx].annotation.legato = 0;
+             legatoNotes.push({
+                pitch: this.notes[fromIdx].pitch,
+                start: this.notes[fromIdx].start,
+                end: this.notes[fromIdx].end,
+                legato: 0,
+            });
+        }
+
+        // 2. Process the rest of the range.
+        // Rule: If a note is within 50ms (0.05s) of the start note's onset, it should ALSO be 0 (chord/double stop).
+        // Otherwise, it is part of the slur (legato=1).
+        const startOnset = this.notes[fromIdx].start;
+        const CHORD_THRESHOLD = 0.05; // 50ms
+
         for (let i = fromIdx + 1; i <= toIdx; i++) {
-            this.notes[i].annotation.legato = 1;
+            const note = this.notes[i];
+            // Check if this note is effectively simultaneous with the start note
+            const isChord = Math.abs(note.start - startOnset) < CHORD_THRESHOLD;
+            const newVal = isChord ? 0 : 1;
+
+            note.annotation.legato = newVal;
             legatoNotes.push({
-                pitch: this.notes[i].pitch,
-                start: this.notes[i].start,
-                end: this.notes[i].end,
-                legato: 1,
+                pitch: note.pitch,
+                start: note.start,
+                end: note.end,
+                legato: newVal,
             });
         }
 
@@ -1048,6 +1102,29 @@ class AnnotationApp {
     reconstructLegatoRanges() {
         this.legatoRanges = [];
         let firstLegatoIdx = null;
+        const CHORD_THRESHOLD = 0.05;
+
+        const findStartIdx = (firstOneIdx) => {
+            let startIdx = Math.max(firstOneIdx - 1, 0);
+            if (startIdx === 0) return 0;
+            
+            const refTime = this.notes[startIdx].start;
+            let curr = startIdx - 1;
+            while (curr >= 0) {
+                const note = this.notes[curr];
+                // If we hit a legato=1 note, that belongs to a previous range.
+                if (note.annotation?.legato === 1) break;
+                
+                // If the time difference is within threshold, include it as part of the start chord.
+                if (Math.abs(refTime - note.start) < CHORD_THRESHOLD) {
+                    startIdx = curr;
+                    curr--;
+                } else {
+                    break;
+                }
+            }
+            return startIdx;
+        };
 
         for (let i = 0; i < this.notes.length; i++) {
             const isLegato = this.notes[i].annotation?.legato === 1;
@@ -1056,8 +1133,7 @@ class AnnotationApp {
                 firstLegatoIdx = i;
             } else if (!isLegato && firstLegatoIdx !== null) {
                 // Run of legato=1 was at indices firstLegatoIdx..(i-1).
-                // The visual range starts one note earlier (note i itself is legato=0).
-                const fromIdx = Math.max(firstLegatoIdx - 1, 0);
+                const fromIdx = findStartIdx(firstLegatoIdx);
                 const toIdx = i - 1;
                 this.legatoRanges.push({
                     fromIdx,
@@ -1073,7 +1149,7 @@ class AnnotationApp {
 
         // Handle run extending to the last note
         if (firstLegatoIdx !== null) {
-            const fromIdx = Math.max(firstLegatoIdx - 1, 0);
+            const fromIdx = findStartIdx(firstLegatoIdx);
             const toIdx = this.notes.length - 1;
             this.legatoRanges.push({
                 fromIdx,
@@ -1110,8 +1186,8 @@ class AnnotationApp {
         grid.querySelectorAll(".legato-overlay").forEach((el) => el.remove());
         
         // Clear active legato styling from notes
-        grid.querySelectorAll(".midi-note.legato-active").forEach((el) => {
-            el.classList.remove("legato-active");
+        grid.querySelectorAll(".midi-note.legato-active, .midi-note.legato-start").forEach((el) => {
+            el.classList.remove("legato-active", "legato-start");
         });
 
         const viewEnd = this.viewStart + this.viewSize;
@@ -1122,6 +1198,23 @@ class AnnotationApp {
                 isPreview: false,
                 rangeIdx,
             });
+            
+            // Highlight notes within this committed range
+            for (let i = range.fromIdx; i <= range.toIdx; i++) {
+                const note = this.notes[i];
+                if (!note) continue;
+                
+                const key = note.noteKey || this.makeNoteKey(note);
+                const btn = grid.querySelector(`[data-note-key="${CSS.escape(key)}"]`);
+                if (btn) {
+                    if (note.annotation.legato === 1) {
+                        btn.classList.add("legato-active");
+                    } else {
+                        // It's in the range but legato=0 (start of phrase or chord)
+                        btn.classList.add("legato-start");
+                    }
+                }
+            }
         });
 
         // Render drag preview
@@ -1139,13 +1232,28 @@ class AnnotationApp {
                     isPreview: true,
                 });
                 
-                // Highlight notes within the drag range
+                // Highlight notes within the drag range preview
+                // We simulate the logic: first note is start (0), rest are active (1)
+                // (ignoring the chord logic for simple preview, or we could replicate it)
+                const startOnset = this.notes[fromIdx].start;
+                const CHORD_THRESHOLD = 0.05;
+
                 for (let i = fromIdx; i <= toIdx; i++) {
                     const note = this.notes[i];
                     const key = note.noteKey || this.makeNoteKey(note);
                     const btn = grid.querySelector(`[data-note-key="${CSS.escape(key)}"]`);
                     if (btn) {
-                        btn.classList.add("legato-active");
+                        // Start note logic for preview
+                        if (i === fromIdx) {
+                             btn.classList.add("legato-start");
+                        } else {
+                             const isChord = Math.abs(note.start - startOnset) < CHORD_THRESHOLD;
+                             if (isChord) {
+                                 btn.classList.add("legato-start");
+                             } else {
+                                 btn.classList.add("legato-active");
+                             }
+                        }
                     }
                 }
             }
@@ -1417,6 +1525,10 @@ class AnnotationApp {
             if (type === "articulation") {
                 this.updateMidiNoteArticulationColor(this.selectedNote);
             }
+            // Keep MIDI piano roll borders in sync with tonal edits.
+            if (type === "tonal") {
+                this.updateMidiNoteTonalClass(this.selectedNote);
+            }
         }
     }
 
@@ -1473,6 +1585,27 @@ class AnnotationApp {
         const button = this.dom.midiGrid.querySelector(`[data-note-key="${CSS.escape(key)}"]`);
         if (!button) return;
         this.applyArticulationColorToMidiButton(button, note.annotation?.articulation || "");
+    }
+
+    updateMidiNoteTonalClass(note) {
+        if (!note || !this.dom.midiGrid) return;
+        const key = note.noteKey || this.makeNoteKey(note);
+        const button = this.dom.midiGrid.querySelector(`[data-note-key="${CSS.escape(key)}"]`);
+        if (!button) return;
+        
+        // Remove existing tonal classes safely
+        const toRemove = [];
+        button.classList.forEach(cls => {
+            if (cls.startsWith("tonal-")) {
+                toRemove.push(cls);
+            }
+        });
+        toRemove.forEach(cls => button.classList.remove(cls));
+
+        const tonal = note.annotation?.tonalTechnique;
+        if (tonal) {
+            button.classList.add(`tonal-${tonal.replace(/\s+/g, '-').toLowerCase()}`);
+        }
     }
 
     getPieSelection(type) {
