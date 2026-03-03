@@ -497,7 +497,7 @@ class AnnotationApp {
                 this.wave.pause();
                 this.setPlaying(false);
             } else {
-                this.centerViewOn(this.currentTime);
+                this.viewAtRatio(this.currentTime, 0.25);
                 this.wave.play();
                 this.setPlaying(true);
             }
@@ -609,7 +609,7 @@ class AnnotationApp {
                 this.wave.pause();
                 this.setPlaying(false);
             } else {
-                this.centerViewOn(this.currentTime);
+                this.viewAtRatio(this.currentTime, 0.25);
                 this.wave.play();
                 this.setPlaying(true);
             }
@@ -1370,16 +1370,32 @@ class AnnotationApp {
         }
     }
 
-    centerViewOn(time, options = {}) {
+    // centerViewOn(time, options = {}) {
+    //     if (!this.duration || !Number.isFinite(time)) {
+    //         return;
+    //     }
+    //     const desiredStart = Math.min(
+    //         Math.max(time - this.viewSize * 0.5, 0),
+    //         Math.max(this.duration - this.viewSize, 0)
+    //     );
+    //     this.setViewStart(desiredStart, { silentSlider: options.silentSlider ?? false });
+    // }
+
+    viewAtRatio(time, ratio, options = {}) {
         if (!this.duration || !Number.isFinite(time)) {
             return;
         }
         const desiredStart = Math.min(
-            Math.max(time - this.viewSize * 0.5, 0),
+            Math.max(time - this.viewSize * ratio, 0),
             Math.max(this.duration - this.viewSize, 0)
         );
         this.setViewStart(desiredStart, { silentSlider: options.silentSlider ?? false });
     }
+
+    // // Position cursor at 25% to see the "back" (future) 3/4 of the window
+    // viewShowingLaterThreeQuarters(time, options = {}) {
+    //     this.viewAtRatio(time, 0.25, options);
+    // }
 
     setupPieControls() {
         this.createPieChart("tonal", this.dom.tonalPie, this.dom.tonalPieLabel, this.tonalOptions);
@@ -1675,7 +1691,7 @@ class AnnotationApp {
         if (!target) return;
 
         this.focusNote(target);
-        this.centerViewOn(target.start, { silentSlider: false });
+        this.viewAtRatio(target.start, 0.25,{ silentSlider: false });
 
         // Move the cursor/time without auto-playing.
         if (this.waveReady) {
@@ -1994,7 +2010,7 @@ class AnnotationApp {
         const padding = this.slicePadding;
         const adjustedStart = Math.max(start - padding, 0);
         const adjustedEnd = Math.min(end + padding, this.duration);
-        this.centerViewOn(adjustedStart, { silentSlider: false });
+        this.viewAtRatio(adjustedStart, 0.25, { silentSlider: false });
         this.currentTime = adjustedStart;
         this.updateCursor(this.currentTime);
         if (adjustedEnd <= adjustedStart) {
