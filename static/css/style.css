@@ -788,3 +788,18 @@ code {
     border: 3px solid #16a34a;
     box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.6);
 }
+
+/* ── Selection Box ── */
+
+.selection-box {
+    position: absolute;
+    background: rgba(127, 85, 177, 0.2);
+    border: 1px solid rgba(127, 85, 177, 0.5);
+    pointer-events: none;
+    z-index: 100;
+}
+
+.midi-note.selected {
+    box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--plum);
+    z-index: 10;
+}

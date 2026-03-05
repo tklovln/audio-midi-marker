@@ -617,43 +617,55 @@ def create_app():
         song = get_song(song_name)
         if not song:
             abort(404)
-        payload = request.get_json() or {}
-        try:
-            pitch = int(payload["pitch"])
-            start = float(payload["start"])
-            end = float(payload["end"])
-        except (KeyError, ValueError, TypeError):
-            abort(400, description="Invalid pitch/start/end")
-
-        tonal = (payload.get("tonalTechnique") or "").strip()
-        articulation = (payload.get("articulation") or "").strip()
-        string_id = _safe_int(payload.get("stringId"))
-        position = _safe_int(payload.get("position"))
-        finger = _safe_int(payload.get("finger"))
-        legato = _safe_int(payload.get("legato"))
+        
+        payload = request.get_json(silent=True) or {}
+        
+        # Normalize to list to support batch updates
+        items = payload if isinstance(payload, list) else [payload]
+        if not items:
+             return jsonify({"status": "ok", "updated": 0})
 
         annotations = read_annotations(song)
-        key = (pitch, start)
-        base = annotations.get(key) or empty_annotation(pitch, start, end)
-        updates = {
-            "pitch": pitch,
-            "start": start,
-            "end": end,
-            "tonalTechnique": tonal,
-            "articulation": articulation,
-        }
-        if string_id is not None:
-            updates["stringId"] = string_id
-        if position is not None:
-            updates["position"] = position
-        if finger is not None:
-            updates["finger"] = finger
-        if legato is not None:
-            updates["legato"] = legato
+        updated_count = 0
 
-        annotations[key] = merge_annotation(base, updates)
+        for item in items:
+            try:
+                pitch = int(item["pitch"])
+                start = float(item["start"])
+                end = float(item["end"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            
+            tonal = (item.get("tonalTechnique") or "").strip()
+            articulation = (item.get("articulation") or "").strip()
+            string_id = _safe_int(item.get("stringId"))
+            position = _safe_int(item.get("position"))
+            finger = _safe_int(item.get("finger"))
+            legato = _safe_int(item.get("legato"))
+
+            key = (pitch, start)
+            base = annotations.get(key) or empty_annotation(pitch, start, end)
+            updates = {
+                "pitch": pitch,
+                "start": start,
+                "end": end,
+                "tonalTechnique": tonal,
+                "articulation": articulation,
+            }
+            if string_id is not None:
+                updates["stringId"] = string_id
+            if position is not None:
+                updates["position"] = position
+            if finger is not None:
+                updates["finger"] = finger
+            if legato is not None:
+                updates["legato"] = legato
+
+            annotations[key] = merge_annotation(base, updates)
+            updated_count += 1
+
         write_annotations(song, annotations)
-        return jsonify({"status": "ok"})
+        return jsonify({"status": "ok", "updated": updated_count})
 
     @flask_app.route("/api/legato/<song_name>", methods=["POST"])
     def legato_api(song_name: str):

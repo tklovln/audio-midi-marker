@@ -65,6 +65,13 @@ class AnnotationApp {
         this.legatoDragPreventClick = false;
         this.pieColors = ["#ffe1e0", "#eeece1", "#9b7ebd", "#f49bab", "#7f55b1", "#e16981"];
         this.selectedNote = null;
+        this.multiSelectedNotes = new Set();
+        this.boxSelection = {
+            active: false,
+            startX: 0,
+            startY: 0,
+            element: null,
+        };
         this.isSavingAnnotation = false;
         this.statusTimer = null;
         this.annotationSaveTimer = null;
@@ -556,22 +563,18 @@ class AnnotationApp {
             const code = event.code;
             if (code === "KeyA") {
                 this.setPieSelection("articulation", "");
-                this.queueAnnotationSave({ immediate: true });
                 return;
             }
             if (code === "KeyS") {
                 this.setPieSelection("articulation", "release");
-                this.queueAnnotationSave({ immediate: true });
                 return;
             }
             if (code === "KeyD") {
                 this.setPieSelection("articulation", "staccato");
-                this.queueAnnotationSave({ immediate: true });
                 return;
             }
             if (code === "KeyF") {
                  this.setPieSelection("articulation", "spiccato");
-                this.queueAnnotationSave({ immediate: true });
                 return;
             }
 
@@ -617,6 +620,7 @@ class AnnotationApp {
         document.addEventListener("keydown", this.handleKeydown);
 
         this.setupScrubbing();
+        this.setupBoxSelection();
     }
 
     setupAiControls() {
@@ -646,7 +650,8 @@ class AnnotationApp {
     }
 
     setupScrubbing() {
-        const containers = [this.dom.midiWrapper, this.dom.waveformWrapper];
+        // Only waveform supports scrubbing now; midiWrapper uses box selection.
+        const containers = [this.dom.waveformWrapper];
 
         containers.forEach((container) => {
             if (!container) return;
@@ -689,6 +694,132 @@ class AnnotationApp {
                 window.addEventListener("mouseup", onMouseUp);
             });
         });
+    }
+
+    setupBoxSelection() {
+        const container = this.dom.midiWrapper;
+        if (!container) return;
+
+        container.addEventListener("mousedown", (e) => {
+            if (e.button !== 0) return;
+            // Ignore if clicking on a note (handled by note button) or legato delete button
+            if (e.target.closest(".midi-note") || e.target.closest(".legato-delete")) return;
+
+            // Clear previous selection if clicking on background
+            this.multiSelectedNotes.clear();
+            this.selectedNote = null;
+            this.renderMidi();
+            
+            this.startBoxSelection(e);
+        });
+    }
+
+    startBoxSelection(e) {
+        e.preventDefault();
+        const rect = this.dom.midiWrapper.getBoundingClientRect();
+        
+        // Seek to click position immediately
+        this.boxSelection.wasPlaying = this.wave.isPlaying();
+        if (this.boxSelection.wasPlaying) {
+            this.wave.pause();
+            this.setPlaying(false);
+        }
+        
+        const ratio = (e.clientX - rect.left) / rect.width;
+        const clampedRatio = Math.max(0, Math.min(1, ratio));
+        const target = this.viewStart + clampedRatio * this.viewSize;
+        this.seekTo(target);
+
+        this.boxSelection.active = true;
+        this.boxSelection.startX = e.clientX - rect.left;
+        this.boxSelection.startY = e.clientY - rect.top;
+        
+        const box = document.createElement("div");
+        box.className = "selection-box";
+        box.style.left = `${this.boxSelection.startX}px`;
+        box.style.top = `${this.boxSelection.startY}px`;
+        box.style.width = "0px";
+        box.style.height = "0px";
+        
+        this.dom.midiWrapper.appendChild(box);
+        this.boxSelection.element = box;
+
+        const onMouseMove = (evt) => {
+            if (!this.boxSelection.active) return;
+            const currentX = evt.clientX - rect.left;
+            const currentY = evt.clientY - rect.top;
+            
+            const x = Math.min(currentX, this.boxSelection.startX);
+            const y = Math.min(currentY, this.boxSelection.startY);
+            const width = Math.abs(currentX - this.boxSelection.startX);
+            const height = Math.abs(currentY - this.boxSelection.startY);
+
+            box.style.left = `${x}px`;
+            box.style.top = `${y}px`;
+            box.style.width = `${width}px`;
+            box.style.height = `${height}px`;
+        };
+
+        const onMouseUp = () => {
+            window.removeEventListener("mousemove", onMouseMove);
+            window.removeEventListener("mouseup", onMouseUp);
+            this.endBoxSelection();
+        };
+
+        window.addEventListener("mousemove", onMouseMove);
+        window.addEventListener("mouseup", onMouseUp);
+    }
+
+    endBoxSelection() {
+        if (!this.boxSelection.active || !this.boxSelection.element) return;
+        
+        const boxRect = this.boxSelection.element.getBoundingClientRect();
+        this.boxSelection.element.remove();
+        this.boxSelection.element = null;
+        this.boxSelection.active = false;
+
+        if (this.boxSelection.wasPlaying) {
+            this.wave.play();
+            this.setPlaying(true);
+        }
+        this.boxSelection.wasPlaying = false;
+
+        // If box is tiny (just a click), treat as clear selection
+        if (boxRect.width < 5 && boxRect.height < 5) {
+            this.multiSelectedNotes.clear();
+            this.selectedNote = null;
+            this.renderMidi();
+            return;
+        }
+
+        const noteButtons = this.dom.midiGrid.querySelectorAll(".midi-note");
+        this.multiSelectedNotes.clear();
+        
+        noteButtons.forEach(btn => {
+            const noteRect = btn.getBoundingClientRect();
+            // Simple AABB intersection
+            if (!(boxRect.left > noteRect.right || 
+                  boxRect.right < noteRect.left || 
+                  boxRect.top > noteRect.bottom || 
+                  boxRect.bottom < noteRect.top)) {
+                
+                const noteKey = btn.dataset.noteKey;
+                const note = this.notes.find(n => (n.noteKey || this.makeNoteKey(n)) === noteKey);
+                if (note) {
+                    this.multiSelectedNotes.add(note);
+                }
+            }
+        });
+
+        if (this.multiSelectedNotes.size > 0) {
+            // Focus on the last selected note to update UI context, but keep multi-selection
+            const lastNote = Array.from(this.multiSelectedNotes).pop();
+            this.focusNote(lastNote, { keepMultiSelection: true });
+            this.renderMidi();
+        } else {
+            this.selectedNote = null;
+            this.renderMidi();
+        }
     }
 
     async handleAiGenerate() {
@@ -914,6 +1045,9 @@ class AnnotationApp {
             }
             if (note.aiChanged) {
                 button.classList.add("ai-changed");
+            }
+            if (this.multiSelectedNotes.has(note) || this.selectedNote === note) {
+                button.classList.add("selected");
             }
 
             button.addEventListener("mousedown", (e) => {
@@ -1450,10 +1584,6 @@ class AnnotationApp {
                     const index = elements[0].index;
                     const value = optionList[index].value;
                     this.setPieSelection(type, value);
-                    if (!this.suspendAutosave) {
-                        // Save immediately on click to avoid losing changes when switching notes quickly
-                        this.queueAnnotationSave({ immediate: true });
-                    }
                 },
                 layout: {
                     padding: 0,
@@ -1522,28 +1652,48 @@ class AnnotationApp {
         this.updatePieLabel(type, value || "");
         chart.update("none");
 
-        if (!options.skipNoteUpdate && this.selectedNote) {
-            const updated = { ...this.selectedNote.annotation };
-            if (type === "tonal") {
-                updated.tonalTechnique = value || "";
-            } else if (type === "articulation") {
-                updated.articulation = value || "";
-            } else if (type === "string") {
-                updated.stringId = value === "" ? null : value;
-            } else if (type === "position") {
-                updated.position = value === "" ? null : value;
-            } else if (type === "finger") {
-                updated.finger = value === "" ? null : value;
-            }
-            this.selectedNote.annotation = updated;
+        if (!options.skipNoteUpdate) {
+            const targets = this.multiSelectedNotes.size > 0 
+                ? Array.from(this.multiSelectedNotes) 
+                : (this.selectedNote ? [this.selectedNote] : []);
+            
+            if (targets.length > 0) {
+                targets.forEach(note => {
+                    const updated = { ...note.annotation };
+                    if (type === "tonal") {
+                        updated.tonalTechnique = value || "";
+                    } else if (type === "articulation") {
+                        updated.articulation = value || "";
+                    } else if (type === "string") {
+                        updated.stringId = value === "" ? null : value;
+                    } else if (type === "position") {
+                        updated.position = value === "" ? null : value;
+                    } else if (type === "finger") {
+                        updated.finger = value === "" ? null : value;
+                    }
+                    note.annotation = updated;
 
-            // Keep MIDI piano roll colors in sync with articulation edits.
-            if (type === "articulation") {
-                this.updateMidiNoteArticulationColor(this.selectedNote);
-            }
-            // Keep MIDI piano roll borders in sync with tonal edits.
-            if (type === "tonal") {
-                this.updateMidiNoteTonalClass(this.selectedNote);
+                    // Keep MIDI piano roll colors in sync with articulation edits.
+                    if (type === "articulation") {
+                        this.updateMidiNoteArticulationColor(note);
+                    }
+                    // Keep MIDI piano roll borders in sync with tonal edits.
+                    if (type === "tonal") {
+                        this.updateMidiNoteTonalClass(note);
+                    }
+                });
+
+                // Save all changes immediately
+                if (!this.suspendAutosave) {
+                    const payloads = this.buildAnnotationPayloads(targets);
+                    this.enqueueAnnotationSave(payloads, { auto: true });
+                }
+
+                // Clear multi-selection after applying changes
+                if (this.multiSelectedNotes.size > 0) {
+                    this.multiSelectedNotes.clear();
+                    this.renderMidi();
+                }
             }
         }
     }
@@ -1793,11 +1943,28 @@ class AnnotationApp {
         return `${stringLabel}-${position}-f${finger}`;
     }
 
-    focusNote(note) {
+    focusNote(note, options = {}) {
         if (!note) return;
         // Ensure pending autosave for the previous note is flushed before switching selection.
         this.flushPendingAnnotationSave();
+
+        if (!options.keepMultiSelection) {
+            this.multiSelectedNotes.clear();
+            // Clear visual selection from all notes
+            if (this.dom.midiGrid) {
+                this.dom.midiGrid.querySelectorAll(".midi-note.selected").forEach(el => el.classList.remove("selected"));
+            }
+        }
+
         this.selectedNote = note;
+
+        // Highlight the new selected note
+        if (this.dom.midiGrid) {
+            const key = this.selectedNote.noteKey || this.makeNoteKey(this.selectedNote);
+            const btn = this.dom.midiGrid.querySelector(`[data-note-key="${CSS.escape(key)}"]`);
+            if (btn) btn.classList.add("selected");
+        }
+
         const label = `${this.getPitchLabel(note.pitch)} · ${note.start.toFixed(2)}s`;
         if (this.dom.annotationNoteLabel) {
             this.dom.annotationNoteLabel.textContent = `Selected: ${label}`;
@@ -1818,9 +1985,22 @@ class AnnotationApp {
     }
 
     makePayloadKey(payload) {
+        // If payload is an array, use a composite key or just the first one.
+        // Since we process the queue FIFO, a simple unique key for the batch is fine,
+        // but for de-duping, we might want to know if it covers the same notes.
+        // For simplicity in batch mode, we'll use a timestamp or random string if it's an array,
+        // effectively disabling de-duping for batches (which is safer).
+        if (Array.isArray(payload)) {
+            return `batch-${Date.now()}-${Math.random()}`;
+        }
         const pitch = typeof payload?.pitch === "number" ? payload.pitch : 0;
         const start = typeof payload?.start === "number" ? payload.start : 0;
         return `${pitch}@${start.toFixed(6)}`;
+    }
+
+    buildAnnotationPayloads(notes) {
+        if (!Array.isArray(notes)) return [];
+        return notes.map(note => this.buildAnnotationPayload(note)).filter(p => p !== null);
     }
 
     buildAnnotationPayload(note) {
@@ -1844,6 +2024,7 @@ class AnnotationApp {
         const key = this.makePayloadKey(payload);
 
         // De-dupe: keep only the latest payload per note.
+        // For batch updates (arrays), we use a unique key so they just stack up.
         const existingIndex = this.annotationSaveQueue.findIndex((item) => item.key === key);
         const item = { key, payload, auto };
         if (existingIndex !== -1) {
@@ -1873,29 +2054,36 @@ class AnnotationApp {
                 if (!response.ok) {
                     throw new Error(`Save failed (${response.status})`);
                 }
+                
                 // Keep local state consistent: update the matching note object (and selected note if it matches).
-                const key = next.key;
-                const match = this.notes.find((n) => (n.noteKey || this.makeNoteKey(n)) === key);
-                if (match) {
-                    match.annotation = {
-                        tonalTechnique: next.payload.tonalTechnique || "",
-                        articulation: next.payload.articulation || "",
-                        stringId: next.payload.stringId ?? null,
-                        position: next.payload.position ?? null,
-                        finger: next.payload.finger ?? null,
-                        legato: next.payload.legato ?? (match.annotation?.legato ?? 0),
-                    };
-                }
-                if (this.selectedNote && (this.selectedNote.noteKey || this.makeNoteKey(this.selectedNote)) === key) {
-                    this.selectedNote.annotation = {
-                        tonalTechnique: next.payload.tonalTechnique || "",
-                        articulation: next.payload.articulation || "",
-                        stringId: next.payload.stringId ?? null,
-                        position: next.payload.position ?? null,
-                        finger: next.payload.finger ?? null,
-                        legato: next.payload.legato ?? (this.selectedNote.annotation?.legato ?? 0),
-                    };
-                }
+                const items = Array.isArray(next.payload) ? next.payload : [next.payload];
+                
+                items.forEach(itemPayload => {
+                    const key = this.makeNoteKey(itemPayload);
+                    const match = this.notes.find((n) => (n.noteKey || this.makeNoteKey(n)) === key);
+                    
+                    if (match) {
+                        match.annotation = {
+                            tonalTechnique: itemPayload.tonalTechnique || "",
+                            articulation: itemPayload.articulation || "",
+                            stringId: itemPayload.stringId ?? null,
+                            position: itemPayload.position ?? null,
+                            finger: itemPayload.finger ?? null,
+                            legato: itemPayload.legato ?? (match.annotation?.legato ?? 0),
+                        };
+                    }
+                    if (this.selectedNote && (this.selectedNote.noteKey || this.makeNoteKey(this.selectedNote)) === key) {
+                        this.selectedNote.annotation = {
+                            tonalTechnique: itemPayload.tonalTechnique || "",
+                            articulation: itemPayload.articulation || "",
+                            stringId: itemPayload.stringId ?? null,
+                            position: itemPayload.position ?? null,
+                            finger: itemPayload.finger ?? null,
+                            legato: itemPayload.legato ?? (this.selectedNote.annotation?.legato ?? 0),
+                        };
+                    }
+                });
+
                 this.setAnnotationStatus(next.auto ? "Changes autosaved." : "Annotation saved.", false);
             })
             .catch((error) => {
