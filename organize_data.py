@@ -6,9 +6,11 @@ import os
 import re
 import shutil
 import sys
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal
+import mido
 
 
 ANNOTATION_HEADERS = [
@@ -20,6 +22,7 @@ ANNOTATION_HEADERS = [
     "stringId",
     "position",
     "finger",
+    "legato",
 ]
 
 Mode = Literal["copy", "symlink", "hardlink"]
@@ -60,12 +63,214 @@ def iter_candidate_files(src_dir: Path) -> Iterable[Path]:
             yield p
 
 
-def ensure_annotation_csv(dest_folder: Path, *, overwrite: bool) -> None:
-    csv_path = dest_folder / "annotation.csv"
-    if csv_path.exists() and not overwrite:
+def extract_midi_notes(midi_path: Path) -> list[dict]:
+    mid = mido.MidiFile(midi_path)
+    # Merge tracks to handle all notes in one timeline
+    merged = mido.merge_tracks(mid.tracks)
+    
+    notes = []
+    active_notes = {} # pitch -> start_time
+    current_time = 0.0
+    # Use default tempo 120 BPM if not set
+    tempo = mido.bpm2tempo(120)
+    
+    for msg in merged:
+        # Update time
+        current_time += mido.tick2second(msg.time, mid.ticks_per_beat, tempo)
+        
+        if msg.type == 'set_tempo':
+            tempo = msg.tempo
+        
+        if msg.type == 'note_on' and msg.velocity > 0:
+            if msg.note in active_notes:
+                start = active_notes.pop(msg.note)
+                notes.append({
+                    "pitch": msg.note,
+                    "start": start,
+                    "end": current_time
+                })
+            active_notes[msg.note] = current_time
+            
+        elif (msg.type == 'note_off') or (msg.type == 'note_on' and msg.velocity == 0):
+            if msg.note in active_notes:
+                start = active_notes.pop(msg.note)
+                notes.append({
+                    "pitch": msg.note,
+                    "start": start,
+                    "end": current_time
+                })
+                
+    # Sort by start time, then pitch
+    notes.sort(key=lambda x: (x['start'], x['pitch']))
+    return notes
+
+
+def sync_annotation_csv(csv_path: Path, midi_path: Path):
+    if not midi_path or not midi_path.exists():
         return
+
+    # 1. Read MIDI notes
+    try:
+        midi_notes = extract_midi_notes(midi_path)
+    except Exception as e:
+        print(f"Warning: Failed to read MIDI {midi_path}: {e}", file=sys.stderr)
+        return
+    
+    # 2. Read existing CSV if it exists
+    existing_rows = []
+    if csv_path.exists():
+        try:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                existing_rows = list(reader)
+        except Exception as e:
+            print(f"Error: Failed to read existing CSV {csv_path}: {e}. Skipping sync to avoid data loss.", file=sys.stderr)
+            return
+            
+    # 3. Merge with robust matching (by pitch and approximate start time)
+    # We want to align existing rows to midi notes to preserve annotations.
+    
+    # Helper to parse float safely
+    def get_float(val):
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return None
+
+    # Load existing rows into a list of dicts for easier processing
+    # We'll try to match each MIDI note to an existing row.
+    # If matched, we use the existing row (and update timestamps if needed/empty).
+    # If not matched, we create a new row.
+    
+    # Load existing rows into a list of dicts for easier processing
+    # We'll try to match each MIDI note to an existing row.
+    # If matched, we use the existing row (and update timestamps if needed/empty).
+    # If not matched, we create a new row.
+    
+    available_rows = []
+    for row in existing_rows:
+        p = row.get('pitch')
+        s = get_float(row.get('start'))
+        # Store original row and metadata for matching
+        available_rows.append({'row': row, 'pitch': str(p) if p else None, 'start': s, 'matched': False})
+
+    new_rows = []
+    
+    # Tolerance for time matching (e.g. 0.05 seconds)
+    TIME_TOLERANCE = 0.05
+
+    for note in midi_notes:
+        note_pitch = str(note['pitch'])
+        note_start = note['start']
+        
+        # Find best match in available_rows
+        best_match_idx = -1
+        best_match_diff = float('inf')
+        
+        for i, item in enumerate(available_rows):
+            if item['matched']:
+                continue
+            
+            # Check pitch (must match exactly)
+            if item['pitch'] != note_pitch:
+                continue
+                
+            # Check start time (must be close)
+            if item['start'] is None:
+                continue
+                
+            diff = abs(item['start'] - note_start)
+            if diff < TIME_TOLERANCE and diff < best_match_diff:
+                best_match_diff = diff
+                best_match_idx = i
+        
+        row = {}
+        if best_match_idx != -1:
+            # Found a match! Use existing row
+            available_rows[best_match_idx]['matched'] = True
+            row = available_rows[best_match_idx]['row'].copy()
+        else:
+            # No match found, create new row from MIDI note
+            row = {
+                'pitch': str(note['pitch']),
+                'start': f"{note['start']:.6f}",
+                'end': f"{note['end']:.6f}"
+            }
+
+        # Ensure all standard headers are present
+        for h in ANNOTATION_HEADERS:
+            if h not in row:
+                row[h] = ""
+        
+        # Fill/Update MIDI data only if empty in the matched row
+        if not row.get('pitch'):
+            row['pitch'] = str(note['pitch'])
+        if not row.get('start'):
+            row['start'] = f"{note['start']:.6f}"
+        if not row.get('end'):
+            row['end'] = f"{note['end']:.6f}"
+            
+        new_rows.append(row)
+    
+    # Add remaining unmatched rows (user might have added extra annotations not in MIDI)
+    for item in available_rows:
+        if not item['matched']:
+            row = item['row'].copy()
+            # Ensure headers
+            for h in ANNOTATION_HEADERS:
+                if h not in row:
+                    row[h] = ""
+            new_rows.append(row)
+            
+    # Sort by start time
+    def sort_key(r):
+        try:
+            return float(r.get('start', 0))
+        except:
+            return 0.0
+            
+    new_rows.sort(key=sort_key)
+    
+    # Detect existing headers to preserve them
+    fieldnames = list(ANNOTATION_HEADERS)
+    if existing_rows:
+        existing_keys = set()
+        for row in existing_rows:
+            existing_keys.update(row.keys())
+        for k in existing_keys:
+            if k not in fieldnames:
+                fieldnames.append(k)
+
+    # 4. Write back with backup
+    try:
+        if csv_path.exists():
+            backup_path = csv_path.with_suffix('.csv.bak')
+            shutil.copy2(csv_path, backup_path)
+            
+        with open(csv_path, 'w', encoding='utf-8', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(new_rows)
+    except Exception as e:
+        print(f"Error: Failed to write CSV {csv_path}: {e}", file=sys.stderr)
+
+
+def ensure_annotation_csv(dest_folder: Path, midi_path: Path, *, overwrite: bool) -> None:
+    csv_path = dest_folder / "annotation.csv"
+    
+    if csv_path.exists():
+        # NEVER delete existing annotation file, even if overwrite is True.
+        # Instead, always sync/merge to preserve user data.
+        sync_annotation_csv(csv_path, midi_path)
+        return
+
+    # Create new file
     csv_path.parent.mkdir(parents=True, exist_ok=True)
+    # Create empty file with headers first
     csv_path.write_text(",".join(ANNOTATION_HEADERS) + "\n", encoding="utf-8")
+    
+    # Then sync with MIDI to populate
+    sync_annotation_csv(csv_path, midi_path)
 
 
 def install_file(src: Path, dst: Path, *, mode: Mode, overwrite: bool, dry_run: bool) -> None:
@@ -95,14 +300,14 @@ def install_file(src: Path, dst: Path, *, mode: Mode, overwrite: bool, dry_run: 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Organize pooled audio/video/midi files into /root/audio-midi-marker/data/<song>/ folders "
+            "Organize pooled audio/video/midi files into /nas_data/tkwang/audio-midi-marker/data/<song>/ folders "
             "for the Flask annotator (app.py)."
         )
     )
     parser.add_argument(
         "--src",
         type=Path,
-        default=Path("/mnt/hdd/Violin_Media_Dataset/Wohlfahrt"),
+        default=Path("/nas_data/tkwang/Violin_Media_Dataset/Wohlfahrt"),
         help="Source directory that contains pooled files (default: %(default)s).",
     )
     parser.add_argument(
@@ -235,7 +440,7 @@ def main(argv: list[str]) -> int:
             if args.dry_run:
                 print(f"[DRY] init {dest_folder / 'annotation.csv'}")
             else:
-                ensure_annotation_csv(dest_folder, overwrite=args.overwrite)
+                ensure_annotation_csv(dest_folder, midi, overwrite=args.overwrite)
 
     if problems:
         print("\nWarnings / missing groups:", file=sys.stderr)

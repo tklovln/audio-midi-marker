@@ -702,6 +702,7 @@ def create_app():
 
         notes = midi_notes(song)
         try:
+            print(f"Generating predictions for {song.name}")
             result = generate_predictions(
                 song.midi_path,
                 song.audio_path,
@@ -710,6 +711,7 @@ def create_app():
                 topk=topk,
                 force=force,
             )
+            print(f"Successfully generated predictions for {song.name}")
         except Exception as exc:  # pragma: no cover
             abort(500, description=f"Inference failed: {exc}")
 
