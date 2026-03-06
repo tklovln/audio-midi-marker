@@ -32,7 +32,7 @@
                     <details class="tree tree--piece">
                         <summary class="tree__summary">
                             <span class="tree__title">{{ piece.title }}</span>
-                            <span class="tree__meta">{{ piece.performers | length }} performer{% if piece.performers | length != 1 %}s{% endif %}</span>
+                            <span class="tree__meta">{{ piece.performers | selectattr('completed') | list | length }}/{{ piece.performers | length }} completed</span>
                         </summary>
 
                         <div class="tree__children tree__children--performers">
