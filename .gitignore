@@ -1,2 +1,15 @@
-/data
-/Paganini_Op01-01_AlicanSuner
+/data*
+/data_deprecate
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# App runtime / logs
+*.log
+gunicorn.ctl
+
+# OS
+.DS_Store
