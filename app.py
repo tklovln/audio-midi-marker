@@ -95,6 +95,7 @@ class Song:
     audio_path: Path
     video_path: Path | None = None
     completed: bool = False
+    annotation_filename: str = "annotation_revised.csv"
 
 
 def _format_title(name: str) -> str:
@@ -193,15 +194,49 @@ def discover_songs() -> List[Song]:
 
         composer, song_name, performer = _parse_song_folder_name(folder.name)
         completed = read_completed_status(folder)
-        midi_path = next(folder.glob("*.mid"), None)
-        audio_path = None
-        for ext in ("mp3", "wav"):
-            audio_candidate = next(folder.glob(f"*.{ext}"), None)
-            if audio_candidate:
-                audio_path = audio_candidate
-                break
         
-        video_path = next(folder.glob("*.mp4"), None)
+        midi_path = None
+        audio_path = None
+        video_path = None
+        annotation_filename = "annotation_revised.csv" # 改這裡
+
+        # Mode 2: *cut.wav / mp3 / mp4 + *merge.mid => annotation_revised.csv
+        merge_midi = next(folder.glob("*merge.mid"), None)
+        if merge_midi:
+            for ext in ("mp3", "wav"):
+                audio_candidate = next(folder.glob(f"*cut.{ext}"), None)
+                if audio_candidate:
+                    midi_path = merge_midi
+                    audio_path = audio_candidate
+                    video_path = next(folder.glob("*cut.mp4"), None)
+                    annotation_filename = "annotation_revised.csv"
+                    break
+        
+        # Mode 1: *_trim_cut.wav / mp3 / mp4 + *trim.mid => annotation_revised.csv
+        if not midi_path:
+            trim_midi = next(folder.glob("*trim.mid"), None)
+            if trim_midi:
+                for ext in ("mp3", "wav"):
+                    audio_candidate = next(folder.glob(f"*_trim_cut.{ext}"), None)
+                    if audio_candidate:
+                        midi_path = trim_midi
+                        audio_path = audio_candidate
+                        video_path = next(folder.glob("*_trim_cut.mp4"), None)
+                        annotation_filename = "annotation_revised.csv"
+                    break
+
+        # Fallback / Legacy
+        if not midi_path:
+            midi_path = next(folder.glob("*.mid"), None)
+            if midi_path:
+                audio_path = None
+                for ext in ("mp3", "wav"):
+                    audio_candidate = next(folder.glob(f"*.{ext}"), None)
+                    if audio_candidate:
+                        audio_path = audio_candidate
+                        break
+                video_path = next(folder.glob("*.mp4"), None)
+                annotation_filename = "annotation_revised.csv"
 
         if midi_path and audio_path:
             songs.append(
@@ -215,6 +250,7 @@ def discover_songs() -> List[Song]:
                     audio_path=audio_path,
                     video_path=video_path,
                     completed=completed,
+                    annotation_filename=annotation_filename,
                 )
             )
 
@@ -271,7 +307,7 @@ def midi_notes(song: Song):
     notes.sort(key=lambda n: n["start"])
     return notes
 def annotation_file(song: Song) -> Path:
-    return song.midi_path.parent / "annotation.csv"
+    return song.midi_path.parent / song.annotation_filename
 
 
 def read_annotations(song: Song):
@@ -454,6 +490,9 @@ def _ensure_browser_video(video_path: Path) -> Path:
 
 def create_app():
     flask_app = Flask(__name__)
+    # Re-read templates on every request so edits take effect without a restart.
+    flask_app.config["TEMPLATES_AUTO_RELOAD"] = True
+    flask_app.jinja_env.auto_reload = True
 
     @flask_app.route("/")
     def index():
@@ -547,20 +586,10 @@ def create_app():
         song = get_song(song_name)
         if not song:
             abort(404)
-        path = song.audio_path
-        size = os.path.getsize(path)
-        # 先回 1KB，確認 headers/first bytes 在外部是能送出的
-        with open(path, "rb") as f:
-            head = f.read(1024)
-
-        return Response(
-            head,
-            status=206,
-            mimetype="audio/wav",
-            headers={
-                "Content-Range": f"bytes 0-1023/{size}",
-                "Accept-Ranges": "bytes",
-            },
+        return send_file(
+            song.audio_path,
+            mimetype=_guess_mimetype(song.audio_path),
+            conditional=True,
         )
 
     # STATIC_BASE = "http://192.168.44.131:18080"  # 之後可換成 nginx/80/443

@@ -86,6 +86,7 @@ class AnnotationApp {
             { value: "", label: "none", abbrev: "Non" },
             { value: "pizzicato", label: "pizzicato", abbrev: "PIZ" },
             { value: "harmonics", label: "harmonics", abbrev: "HAR" },
+            { value: "openstring", label: "openstring", abbrev: "OPN" },
             // { value: "muted", label: "muted", abbrev: "MUT" },
             // { value: "sul ponticello", label: "sul ponticello", abbrev: "SPT" },
             // { value: "sul tasto", label: "sul tasto", abbrev: "STS" },
@@ -990,7 +991,7 @@ class AnnotationApp {
                     note.aiSuggestion = null;
                 }
             });
-            this.setAnnotationStatus("AI fingering committed to annotation.csv.", false);
+            this.setAnnotationStatus("AI fingering committed to annotation_revised.csv.", false);
             this.renderMidi();
             this.renderNoteButtons();
         } catch (error) {

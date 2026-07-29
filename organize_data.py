@@ -256,7 +256,7 @@ def sync_annotation_csv(csv_path: Path, midi_path: Path):
 
 
 def ensure_annotation_csv(dest_folder: Path, midi_path: Path, *, overwrite: bool) -> None:
-    csv_path = dest_folder / "annotation.csv"
+    csv_path = dest_folder / "annotation_revised.csv"
     
     if csv_path.exists():
         # NEVER delete existing annotation file, even if overwrite is True.
@@ -335,7 +335,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--init-annotation",
         action="store_true",
-        help="Create annotation.csv with headers in each created song folder (optional).",
+        help="Create annotation_revised.csv with headers in each created song folder (optional).",
     )
     parser.add_argument(
         "--only-base",
@@ -346,7 +346,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--prefer-midi",
         choices=("trim", "merge"),
-        default="trim",
+        default="merge",
         help="When both *_trim.mid and *_merge.mid exist, pick which one to copy/link (default: %(default)s).",
     )
 
@@ -396,15 +396,20 @@ def main(argv: list[str]) -> int:
             # deterministic pick if duplicates
             return sorted(items)[0]
 
-        audio = pick_one("cut_trim.wav") or pick_one("cut_trim.mp3")
-        video = pick_one("cut_trim.mp4")
+        
         midi_trim = pick_one("trim.mid")
         midi_merge = pick_one("merge.mid")
         midi = None
         if args.prefer_midi == "trim":
-            midi = midi_trim or midi_merge
+            audio = pick_one("trim_cut.wav") or pick_one("trim_cut.mp3")
+            video = pick_one("trim_cut.mp4")
+            midi = pick_one("trim.mid")
+        elif args.prefer_midi == "merge":
+            audio = pick_one("cut.wav") or pick_one("cut.mp3")
+            video = pick_one("cut.mp4")
+            midi = pick_one("merge.mid")
         else:
-            midi = midi_merge or midi_trim
+            raise ValueError(f"Unknown prefer-midi: {args.prefer_midi}")
 
         if not audio or not midi:
             problems.append(
@@ -438,7 +443,7 @@ def main(argv: list[str]) -> int:
 
         if args.init_annotation:
             if args.dry_run:
-                print(f"[DRY] init {dest_folder / 'annotation.csv'}")
+                print(f"[DRY] init {dest_folder / 'annotation_revised.csv'}")
             else:
                 ensure_annotation_csv(dest_folder, midi, overwrite=args.overwrite)
 

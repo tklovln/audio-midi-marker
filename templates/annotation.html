@@ -185,9 +185,11 @@
                 </div>
             </div>
             <div class="annotation-actions">
+                <!-- AI generate button 暫時停用
                 <button id="ai-generate" class="secondary-button" type="button">
                     AI generate
                 </button>
+                -->
                 <span id="annotation-status" class="annotation-status" role="status" aria-live="polite">
                     Select a note to annotate. Changes save automatically.
                 </span>
@@ -218,7 +220,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     {% endif %}
-    <script src="https://cdn.jsdelivr.net/npm/wavesurfer.js@7/dist/wavesurfer.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/wavesurfer.js@6.6.4/dist/wavesurfer.min.js"></script>
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>

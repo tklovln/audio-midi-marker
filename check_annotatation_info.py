@@ -13,25 +13,29 @@ def analyze_annotations(data_dir):
     pitch_counter = Counter()
     tonal_technique_counter = Counter()
     articulation_counter = Counter()
+    legato_counter = Counter()
+    
+    files_with_float_legato = set()
+    files_with_none_legato = set()
     
     annotation_files = []
     
-    # Find all annotation.csv files
+    # Find all annotation_revised.csv files
     for root, dirs, files in os.walk(data_dir):
-        if "annotation.csv" in files:
+        if "annotation_revised.csv" in files:
             status_path = os.path.join(root, "status.json")
             if os.path.exists(status_path):
                 try:
                     with open(status_path, 'r', encoding='utf-8') as sf:
                         status_data = json.load(sf)
                         if status_data.get("completed") is True:
-                            annotation_files.append(os.path.join(root, "annotation.csv"))
+                            annotation_files.append(os.path.join(root, "annotation_revised.csv"))
                 except json.JSONDecodeError:
                     print(f"Error decoding JSON in {status_path}")
                 except Exception as e:
                     print(f"Error reading {status_path}: {e}")
             
-    print(f"Found {len(annotation_files)} annotation.csv files with completed status.")
+    print(f"Found {len(annotation_files)} annotation_revised.csv files with completed status.")
     
     for file_path in annotation_files:
         try:
@@ -66,6 +70,21 @@ def analyze_annotations(data_dir):
                         art = "None"
                     articulation_counter[art] += 1
                     
+                    # Legato
+                    legato = row.get('legato', '').strip()
+                    if not legato:
+                        legato = "None"
+                        files_with_none_legato.add(file_path)
+                    elif '.' in legato:
+                        # Check if it's a float string
+                        try:
+                            float(legato)
+                            files_with_float_legato.add(file_path)
+                        except ValueError:
+                            pass
+                            
+                    legato_counter[legato] += 1
+                    
         except Exception as e:
             print(f"Error reading {file_path}: {e}")
 
@@ -92,6 +111,22 @@ def analyze_annotations(data_dir):
     print(f"\n4. Articulation Distribution:")
     for art, count in articulation_counter.most_common():
         print(f"   {art}: {count}")
+        
+    print(f"\n5. Legato Distribution:")
+    for leg, count in legato_counter.most_common():
+        print(f"   {leg}: {count}")
+        
+    print("\n" + "="*30)
+    print("       FILES WITH ISSUES       ")
+    print("="*30)
+    
+    print(f"\nFiles with Floating Point Legato ({len(files_with_float_legato)}):")
+    for f in sorted(list(files_with_float_legato)):
+        print(f"   {f}")
+        
+    print(f"\nFiles with None/Empty Legato ({len(files_with_none_legato)}):")
+    for f in sorted(list(files_with_none_legato)):
+        print(f"   {f}")
 
 if __name__ == "__main__":
     data_directory = "./data"
